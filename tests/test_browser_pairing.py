@@ -31,6 +31,10 @@ def device_identity():
     return {**value, "last_used_at": 2}
 
 
+def no_saved_assignment(origin, experiment_id):
+    return None
+
+
 class FakeClock:
     def __init__(self):
         self.now = 1000
@@ -50,6 +54,30 @@ class FakeClock:
 
 
 class BrowserPairingTests(unittest.TestCase):
+    def test_wait_requires_assignment_lookup_before_any_poll_or_exchange(self):
+        self.poll_states = ["approved"]
+        with server(self.respond) as (origin, requests):
+            pending = self.pairing.start(origin, "lab-mac")
+            with self.assertRaises(TypeError):
+                self.pairing.wait(pending, self.clock)
+            self.assertEqual(len(requests), 1)
+            result = self.pairing.wait(pending, self.clock, reuse=lambda origin, experiment_id: "saved-manual")
+            self.assertEqual(result, {"profile_name": "saved-manual"})
+            self.assertEqual(len(requests), 2)
+            self.assertFalse(any(path.endswith("/exchange") for _, path, *_ in requests))
+
+    def test_wait_rejects_noncallable_lookup_without_consuming_handle_or_exchanging(self):
+        self.poll_states = ["approved"]
+        with server(self.respond) as (origin, requests):
+            pending = self.pairing.start(origin, "lab-mac")
+            for invalid in (None, False, "saved-manual"):
+                with self.subTest(invalid=invalid), self.assertRaises(TypeError):
+                    self.pairing.wait(pending, self.clock, reuse=invalid)
+                self.assertEqual(len(requests), 1)
+            result = self.pairing.wait(pending, self.clock, reuse=lambda origin, experiment_id: "saved-manual")
+            self.assertEqual(result, {"profile_name": "saved-manual"})
+            self.assertFalse(any(path.endswith("/exchange") for _, path, *_ in requests))
+
     def setUp(self):
         self.clock = FakeClock()
         self.pairing = BrowserPairing()
@@ -82,9 +110,9 @@ class BrowserPairingTests(unittest.TestCase):
     def test_random_challenge_browser_path_and_verified_result_without_verifier(self):
         with server(self.respond) as (origin, requests):
             pending = self.pairing.start(origin + "/", "lab-mac")
-            result = self.pairing.wait(pending, self.clock)
+            result = self.pairing.wait(pending, self.clock, reuse=no_saved_assignment)
             with self.assertRaises(ApiError):
-                self.pairing.wait(pending, self.clock)
+                self.pairing.wait(pending, self.clock, reuse=no_saved_assignment)
         self.assertEqual(result, {"device_response": device(), "study_context": study()})
         verifier = json.loads(requests[1][3])["verifier"]
         self.assertRegex(verifier, r"^[A-Za-z0-9_-]{43}$")
@@ -104,7 +132,7 @@ class BrowserPairingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary, server(self.respond) as (origin, requests):
             profiles = ConnectionProfiles(Path(temporary) / "connections")
             pending = self.pairing.start(origin, "lab-mac")
-            result = self.pairing.wait(pending, self.clock)
+            result = self.pairing.wait(pending, self.clock, reuse=profiles.find_assignment)
             self.assertFalse(profiles.base.exists())
             name = profiles.publish(origin, **result)
             self.assertEqual(profiles.names(), ["practice-study-bbbbbbbb"])
@@ -125,7 +153,7 @@ class BrowserPairingTests(unittest.TestCase):
             with server(self.respond) as (origin, requests):
                 pending = self.pairing.start(origin, "lab-mac")
                 with self.assertRaises(ApiError):
-                    self.pairing.wait(pending, self.clock)
+                    self.pairing.wait(pending, self.clock, reuse=no_saved_assignment)
             self.assertFalse(any(path.endswith("/exchange") for _, path, *_ in requests))
             self.assertLessEqual(self.clock.now, self.expiry)
 
@@ -137,7 +165,7 @@ class BrowserPairingTests(unittest.TestCase):
             timer.start()
             try:
                 with self.assertRaises(ApiError):
-                    self.pairing.wait(pending, cancelled)
+                    self.pairing.wait(pending, cancelled, reuse=no_saved_assignment)
             finally:
                 timer.join()
         self.assertEqual(len(requests), 1)
@@ -147,7 +175,7 @@ class BrowserPairingTests(unittest.TestCase):
         with server(self.respond) as (origin, requests):
             pending = self.pairing.start(origin, "lab-mac")
             with self.assertRaises(ApiError):
-                self.pairing.wait(pending, self.clock)
+                self.pairing.wait(pending, self.clock, reuse=no_saved_assignment)
         self.assertEqual(len(requests), 2)
         for failure in (False, OSError("browser failed")):
             with server(self.respond) as (origin, requests):
@@ -170,7 +198,7 @@ class BrowserPairingTests(unittest.TestCase):
             with self.subTest(endpoint=endpoint, field=field), server(self.respond) as (origin, requests):
                 pending = self.pairing.start(origin, "lab-mac")
                 with self.assertRaises(ContractError):
-                    self.pairing.wait(pending, self.clock)
+                    self.pairing.wait(pending, self.clock, reuse=no_saved_assignment)
             self.documents[endpoint][field] = original
 
     def test_failed_exchange_is_not_retried_even_by_second_wait(self):
@@ -185,7 +213,7 @@ class BrowserPairingTests(unittest.TestCase):
             pending = self.pairing.start(origin, "lab-mac")
             for _ in range(2):
                 with self.assertRaises(ApiError) as caught:
-                    self.pairing.wait(pending, self.clock)
+                    self.pairing.wait(pending, self.clock, reuse=no_saved_assignment)
                 self.assertNotIn(TOKEN, str(caught.exception))
         self.assertEqual(sum(path.endswith("/exchange") for _, path, *_ in requests), 1)
 
@@ -203,8 +231,8 @@ class BrowserPairingTests(unittest.TestCase):
         with server(respond) as (origin, requests):
             pending = self.pairing.start(origin, "lab-mac")
             with self.assertRaises(ApiError):
-                self.pairing.wait(pending, self.clock)
-            result = self.pairing.wait(pending, self.clock)
+                self.pairing.wait(pending, self.clock, reuse=no_saved_assignment)
+            result = self.pairing.wait(pending, self.clock, reuse=no_saved_assignment)
         self.assertEqual(result["study_context"], study())
         self.assertEqual(attempts[0][1], attempts[1][1])
         self.assertGreaterEqual(attempts[1][0] - attempts[0][0], pending.interval)
@@ -216,10 +244,10 @@ class BrowserPairingTests(unittest.TestCase):
                     else self.respond(*args)) as (origin, requests):
             pending = self.pairing.start(origin, "lab-mac")
             with self.assertRaises(ApiError):
-                self.pairing.wait(pending, self.clock)
+                self.pairing.wait(pending, self.clock, reuse=no_saved_assignment)
             self.clock.now = self.expiry
             with self.assertRaises(ApiError):
-                self.pairing.wait(pending, self.clock)
+                self.pairing.wait(pending, self.clock, reuse=no_saved_assignment)
         self.assertEqual(len(requests), 2)
 
     def test_approval_reuses_saved_assignment_before_exchange_for_all_profile_names(self):
@@ -237,7 +265,7 @@ class BrowserPairingTests(unittest.TestCase):
                 self.assertEqual(result, {"profile_name": name})
                 self.assertEqual({path.name: path.read_bytes() for path in root.iterdir() if path.is_file()}, before)
                 with self.assertRaises(ApiError):
-                    self.pairing.wait(pending, self.clock)
+                    self.pairing.wait(pending, self.clock, reuse=no_saved_assignment)
             self.assertEqual(len(requests), 2)
             self.assertFalse(any(path.endswith("/exchange") for _, path, *_ in requests))
 
@@ -272,11 +300,11 @@ class BrowserPairingTests(unittest.TestCase):
 
         with server(respond) as (origin, requests), ThreadPoolExecutor(max_workers=1) as pool:
             pending = self.pairing.start(origin, "lab-mac")
-            first = pool.submit(self.pairing.wait, pending, self.clock)
+            first = pool.submit(self.pairing.wait, pending, self.clock, reuse=no_saved_assignment)
             try:
                 self.assertTrue(entered.wait(5))
                 with self.assertRaises(ApiError):
-                    self.pairing.wait(pending, self.clock)
+                    self.pairing.wait(pending, self.clock, reuse=no_saved_assignment)
             finally:
                 release.set()
             self.assertEqual(first.result()["study_context"], study())
@@ -295,7 +323,7 @@ class BrowserPairingTests(unittest.TestCase):
             with self.subTest(suffix=suffix), server(respond) as (origin, requests):
                 pending = self.pairing.start(origin, "lab-mac")
                 with self.assertRaises(ApiError):
-                    self.pairing.wait(pending, self.clock)
+                    self.pairing.wait(pending, self.clock, reuse=no_saved_assignment)
             self.assertTrue(requests[-1][1].endswith(suffix))
 
     def test_monotonic_deadline_cannot_be_extended_by_clock_rollback(self):
@@ -306,7 +334,7 @@ class BrowserPairingTests(unittest.TestCase):
             with server(self.respond) as (origin, requests):
                 pending = self.pairing.start(origin, "lab-mac")
                 with self.assertRaises(ApiError):
-                    self.pairing.wait(pending, self.clock)
+                    self.pairing.wait(pending, self.clock, reuse=no_saved_assignment)
         self.assertEqual(self.clock.now, 1010)
         self.assertEqual(len(requests), 2)
 
@@ -319,7 +347,7 @@ class BrowserPairingTests(unittest.TestCase):
         with server(respond) as (origin, requests):
             pending = self.pairing.start(origin, "lab-mac")
             with self.assertRaises(ContractError):
-                self.pairing.wait(pending, self.clock)
+                self.pairing.wait(pending, self.clock, reuse=no_saved_assignment)
         self.assertEqual(len(requests), 2)
 
     def test_slow_approval_and_preexpired_start_are_rejected(self):
@@ -333,7 +361,7 @@ class BrowserPairingTests(unittest.TestCase):
         with server(respond) as (origin, requests):
             pending = self.pairing.start(origin, "lab-mac")
             with self.assertRaises(ApiError):
-                self.pairing.wait(pending, self.clock)
+                self.pairing.wait(pending, self.clock, reuse=no_saved_assignment)
             with self.assertRaises(ApiError):
                 self.pairing.start(origin, "lab-mac")
         self.assertFalse(any(path.endswith("/exchange") for _, path, *_ in requests))
@@ -376,14 +404,14 @@ class InFlightPairingTests(unittest.TestCase):
                             started = time.monotonic()
                             try:
                                 with self.assertRaises(ApiError):
-                                    pairing.wait(pending, cancel)
+                                    pairing.wait(pending, cancel, reuse=no_saved_assignment)
                                 self.assertLess(time.monotonic() - started, 1.9)
                                 self.assertTrue(entered.is_set())
                                 self.assertTrue(disconnected.wait(0.7))
                                 self.assertTrue(requests[-1][1].endswith(suffix))
                                 count = len(requests)
                                 with self.assertRaises(ApiError):
-                                    pairing.wait(pending, threading.Event())
+                                    pairing.wait(pending, threading.Event(), reuse=no_saved_assignment)
                                 self.assertEqual(len(requests), count)
                             finally:
                                 if cancellation:

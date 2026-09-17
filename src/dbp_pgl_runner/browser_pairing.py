@@ -58,14 +58,17 @@ class BrowserPairing:
                                                            time.monotonic() + pending.interval)
         return pending
 
-    def wait(self, pending, cancel_event, *, reuse=None):
+    def wait(self, pending, cancel_event, *, reuse):
         """Resume polling, reuse a saved assignment, or exchange exactly once.
 
-        A reuse(origin, experiment_id) callback returns a profile name or None.
+        The required reuse(origin, experiment_id) callback checks saved
+        assignments and returns a profile name or None before any exchange.
         Reuse returns only profile_name; new pairing returns device_response and
         study_context after verification. Transport failures before exchange
         release waiter ownership without losing the proof or polling schedule.
         """
+        if not callable(reuse):
+            raise TypeError("Assignment reuse lookup must be callable")
         with self._lock:
             state = self._requests.get(pending)
             if state is None or state.active:
@@ -98,13 +101,11 @@ class BrowserPairing:
                     raise ApiError("Authorization denied")
                 if status["status"] == "approved":
                     break
-            if reuse is not None:
-                name = reuse(pending.origin, status["experiment_id"])
-                remaining()
-                if name is not None:
-                    consume()
-                    return {"profile_name": name}
+            name = reuse(pending.origin, status["experiment_id"])
             remaining()
+            if name is not None:
+                consume()
+                return {"profile_name": name}
             consume()
             response = RunnerApi.exchange_authorization(pending.origin, pending.request_id, state.verifier,
                                                         timeout=min(30, remaining()), budget=budget)
