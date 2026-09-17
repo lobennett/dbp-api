@@ -10,7 +10,7 @@ requires-python = ">=3.11"
 dependencies = []
 
 [project.optional-dependencies]
-experiment = ["pgl @ git+https://github.com/lobennett/pgl.git@4ffe661e7bdf4a5f0f02e84af54c02416d021261 ; sys_platform == 'darwin'"]
+experiment = ["pgl @ git+https://github.com/lobennett/pgl.git@11888d9ff7945194420f35eb7b8f1721903f0a66 ; sys_platform == 'darwin'"]
 
 [project.scripts]
 dbp-pgl = "dbp_pgl_runner.cli:main"

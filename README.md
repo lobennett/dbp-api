@@ -27,7 +27,8 @@ PYTHONPATH=src python3 -m dbp_pgl_runner --help
 ```
 
 The optional `experiment` extra pins package `pgl` to reviewed fork commit
-`4ffe661e7bdf4a5f0f02e84af54c02416d021261` on macOS. Installing it does **not** enable
+`11888d9ff7945194420f35eb7b8f1721903f0a66` on macOS, including Justin's upstream
+`main` through `ddfd54d` plus the prepared-block path extension. Installing it does **not** enable
 execution. PGL's build requires its native macOS toolchain and additional library
 prerequisites; none is needed for preparation or these tests. No PGL import occurs
 in the wrapper. The fork's `pgl/pglImage.py` defines `pglMovieDatabase` and
