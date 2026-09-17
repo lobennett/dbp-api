@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dbp-pgl-runner"
+version = "0.1.0"
+description = "Integration-only verified offline preparation for DBP/PGL"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+experiment = ["pgl @ git+https://github.com/lobennett/pgl.git@4ffe661e7bdf4a5f0f02e84af54c02416d021261 ; sys_platform == 'darwin'"]
+
+[project.scripts]
+dbp-pgl = "dbp_pgl_runner.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
