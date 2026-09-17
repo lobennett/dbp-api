@@ -5,11 +5,12 @@ import base64
 import hashlib
 import http.client
 import json
+import re
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
-from .config import validate_origin, validate_token
+from .config import RunnerConfig, validate_origin, validate_token
 from .models import (BlockPackage, ContractError, MAX_JSON_BYTES, canonical_subject,
                      canonical_bytes, identity, is_finite_number, normalized, strict_json)
 
@@ -28,7 +29,7 @@ class _NoRedirect(HTTPRedirectHandler):
 
 
 @contextmanager
-def _request(origin, path, *, token=None, body=None, headers=None):
+def _request(origin, path, *, token=None, body=None, headers=None, timeout=30):
     origin = validate_origin(origin)
     request_headers = {"Accept": "application/json", "Accept-Encoding": "identity"}
     request_headers.update(headers or {})
@@ -39,7 +40,7 @@ def _request(origin, path, *, token=None, body=None, headers=None):
     request = Request(origin + path, data=body, headers=request_headers)
     opener = build_opener(ProxyHandler({}), _NoRedirect())
     try:
-        with opener.open(request, timeout=30) as response:
+        with opener.open(request, timeout=timeout) as response:
             if response.headers.get("Content-Encoding", "identity") != "identity":
                 raise ApiError("Encoded response refused")
             yield response
@@ -51,8 +52,8 @@ def _request(origin, path, *, token=None, body=None, headers=None):
         raise ApiError("Runner request failed; details withheld to protect credentials") from None
 
 
-def _json(origin, path, token=None, body=None, expected_status=200):
-    with _request(origin, path, token=token, body=body) as response:
+def _json(origin, path, token=None, body=None, expected_status=200, *, timeout=30):
+    with _request(origin, path, token=token, body=body, timeout=timeout) as response:
         if response.status != expected_status:
             raise ApiError("Unexpected response status")
         size = response.headers.get("Content-Length")
@@ -78,10 +79,81 @@ def _device(value, pairing=False):
     return value
 
 
+def _authorization_expiry(value):
+    if not is_finite_number(value) or value <= 0:
+        raise ContractError("Invalid authorization expiry")
+
+
+def _authorization_body(request_id, verifier):
+    identity(request_id)
+    if type(verifier) is not str or not re.fullmatch(r"[A-Za-z0-9_-]{43,128}", verifier):
+        raise ContractError("Invalid authorization verifier")
+    return canonical_bytes({"verifier": verifier})
+
+
 class RunnerApi:
     def __init__(self, config, token):
         self.config = config
         self._token = validate_token(token)
+
+    @staticmethod
+    def start_authorization(origin, device_name, challenge):
+        normalized(device_name, 160)
+        if type(challenge) is not str or not re.fullmatch(r"[0-9a-f]{64}", challenge):
+            raise ContractError("Invalid authorization challenge")
+        value = _json(origin, "/api/runner-device/authorizations",
+                      body=canonical_bytes({"device_name": device_name, "challenge": challenge}),
+                      expected_status=201)
+        if type(value) is not dict or set(value) != {
+                "request_id", "user_code", "verification_path", "expires_at", "interval"}:
+            raise ContractError("Invalid authorization response fields")
+        request_id = identity(value["request_id"])
+        code = request_id[:4].upper() + "-" + request_id[4:8].upper()
+        if (value["user_code"] != code
+                or value["verification_path"] != "/runner/authorize?request=" + request_id):
+            raise ContractError("Invalid authorization verification path or code")
+        _authorization_expiry(value["expires_at"])
+        if type(value["interval"]) is not int or not 1 <= value["interval"] <= 900:
+            raise ContractError("Invalid authorization polling interval")
+        return value
+
+    @staticmethod
+    def poll_authorization(origin, request_id, verifier, *, timeout=30):
+        body = _authorization_body(request_id, verifier)
+        value = _json(origin, "/api/runner-device/authorizations/" + request_id + "/poll",
+                      body=body, timeout=timeout)
+        if type(value) is not dict or value.get("status") not in ("pending", "approved", "denied"):
+            raise ContractError("Invalid authorization status")
+        fields = {"status", "expires_at"}
+        if value["status"] == "approved":
+            fields.add("experiment_id")
+        if set(value) != fields:
+            raise ContractError("Invalid authorization poll fields")
+        _authorization_expiry(value["expires_at"])
+        if value["status"] == "approved":
+            identity(value["experiment_id"])
+        return value
+
+    @staticmethod
+    def exchange_authorization(origin, request_id, verifier, *, timeout=30):
+        body = _authorization_body(request_id, verifier)
+        return _device(_json(origin, "/api/runner-device/authorizations/" + request_id + "/exchange",
+                             body=body, expected_status=201, timeout=timeout), pairing=True)
+
+    @classmethod
+    def from_device(cls, origin, response):
+        """Create a client from an in-memory credential without writing any files."""
+        _device(response, pairing=True)
+        config = RunnerConfig(validate_origin(origin), response["device_id"],
+                              response["experiment_id"], "token-" + "0" * 32)
+        return cls(config, response["token"])
+
+    def verify_device(self, response, *, timeout=30):
+        _device(response, pairing=True)
+        current = self.identity(timeout=timeout)
+        if any(current[field] != response[field] for field in response if field != "token"):
+            raise ContractError("Issued credential does not match verified device")
+        return current
 
     @staticmethod
     def pair(origin, code, device_name):
@@ -91,8 +163,9 @@ class RunnerApi:
         return _device(_json(origin, "/api/runner-device/pairings/exchange", body=body,
                              expected_status=201), pairing=True)
 
-    def identity(self):
-        result = _device(_json(self.config.server_origin, "/api/runner-device/identity", self._token))
+    def identity(self, *, timeout=30):
+        result = _device(_json(self.config.server_origin, "/api/runner-device/identity", self._token,
+                               timeout=timeout))
         if (result["device_id"] != self.config.device_id
                 or result["experiment_id"] != self.config.experiment_id):
             raise ContractError("Device response does not match configured identity")
@@ -107,8 +180,8 @@ class RunnerApi:
             raise ContractError("Block does not match configured experiment and requested subject")
         return package
 
-    def study(self):
-        value = _json(self.config.server_origin, "/api/runner-device/study", self._token)
+    def study(self, *, timeout=30):
+        value = _json(self.config.server_origin, "/api/runner-device/study", self._token, timeout=timeout)
         if type(value) is not dict or set(value) != {
                 "schema_version", "mode", "pgl_ready", "experiment_id", "study_id", "study_name", "subjects"}:
             raise ContractError("Invalid study response fields")

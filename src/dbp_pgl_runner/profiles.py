@@ -7,11 +7,12 @@ from pathlib import Path
 import re
 import stat
 import tempfile
+import unicodedata
 
 from .api import RunnerApi
 from .config import (RunnerConfig, fsync_directory, preflight_config_directory,
                      private_directory, save_pairing, validate_origin, validate_token)
-from .models import ContractError, normalized
+from .models import ContractError, canonical_bytes, normalized, strict_json
 
 
 _NAME = re.compile(r"[a-z][a-z0-9-]{0,47}")
@@ -41,6 +42,29 @@ def _pairing_lock(root):
         yield
     finally:
         os.close(descriptor)
+
+
+def _publish_pairing(root, origin, response):
+    with tempfile.TemporaryDirectory(prefix=".pairing-", dir=root) as temporary:
+        staging = Path(temporary)
+        config = save_pairing(staging, origin, response, allow_file_token=True)
+        token_path = root / config.token_ref
+        token_published = config_published = False
+        try:
+            os.link(staging / config.token_ref, token_path, follow_symlinks=False)
+            token_published = True
+            fsync_directory(root)
+            os.link(staging / "config.json", root / "config.json", follow_symlinks=False)
+            config_published = True
+            fsync_directory(root)
+        except FileExistsError:
+            raise ContractError("Profile configuration appeared during pairing; it was not overwritten") from None
+        finally:
+            if token_published and not config_published:
+                token_path.unlink()
+                fsync_directory(root)
+    fsync_directory(root)
+    return config
 
 
 class ConnectionProfiles:
@@ -91,6 +115,44 @@ class ConnectionProfiles:
                 names.append(entry.name)
         return result + sorted(names)
 
+    def publish(self, origin, device_response, study_context):
+        """Verify live authority in memory, then publish or reuse without replacement.
+
+        Calling this method opts into the same private-file credential storage
+        as manual pairing. No credential or directory is written before identity
+        and authoritative study verification have both succeeded.
+        """
+        origin = validate_origin(origin)
+        device_response = strict_json(canonical_bytes(device_response))
+        study_context = strict_json(canonical_bytes(study_context))
+        api = RunnerApi.from_device(origin, device_response)
+        api.verify_device(device_response)
+        context = api.study()
+        if canonical_bytes(context) != canonical_bytes(study_context):
+            raise ContractError("Study context does not match the verified study")
+        title = unicodedata.normalize("NFKD", context["study_name"]).encode("ascii", "ignore").decode().lower()
+        stem = re.sub(r"[^a-z0-9]+", "-", title).strip("-") or "study"
+        if not stem[0].isalpha():
+            stem = "study-" + stem
+        name = stem[:39].rstrip("-") + "-" + context["experiment_id"][:8]
+        root = self.directory(name)
+        private_directory(self.base)
+        private_directory(self.base / "profiles")
+        root = preflight_config_directory(root)
+        fsync_directory(root.parent)
+        fsync_directory(self.base)
+        fsync_directory(self.base.parent)
+        with _pairing_lock(root):
+            if os.path.lexists(root / "config.json"):
+                existing = RunnerConfig.load(root)
+                if (existing.server_origin != origin or existing.device_id != device_response["device_id"]
+                        or existing.experiment_id != device_response["experiment_id"]):
+                    raise ContractError("Profile conflicts with an existing connection; it was not overwritten")
+                existing.read_token(root)
+            else:
+                _publish_pairing(root, origin, device_response)
+        return name
+
     def connect(self, name, origin, pairing_code, device_name, *, allow_file_token=False):
         """Pair once into an unused profile; return device and experiment IDs only.
 
@@ -120,23 +182,5 @@ class ConnectionProfiles:
             current = self.directory(name).stat(follow_symlinks=False)
             if (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino):
                 raise ContractError("Profile directory changed during pairing")
-            with tempfile.TemporaryDirectory(prefix=".pairing-", dir=root) as temporary:
-                staging = Path(temporary)
-                config = save_pairing(staging, origin, response, allow_file_token=True)
-                token_path = root / config.token_ref
-                token_published = config_published = False
-                try:
-                    os.link(staging / config.token_ref, token_path, follow_symlinks=False)
-                    token_published = True
-                    fsync_directory(root)
-                    os.link(staging / "config.json", root / "config.json", follow_symlinks=False)
-                    config_published = True
-                    fsync_directory(root)
-                except FileExistsError:
-                    raise ContractError("Profile configuration appeared during pairing; it was not overwritten") from None
-                finally:
-                    if token_published and not config_published:
-                        token_path.unlink()
-                        fsync_directory(root)
-            fsync_directory(root)
+            config = _publish_pairing(root, origin, response)
             return {"device_id": config.device_id, "experiment_id": config.experiment_id}

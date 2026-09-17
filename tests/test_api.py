@@ -19,6 +19,82 @@ def json_response(value, status=200):
 
 
 class ApiTests(unittest.TestCase):
+    def test_browser_authorization_contract_and_single_exchange(self):
+        request_id = "a" * 32
+        pending = {"request_id": request_id, "user_code": "AAAA-AAAA",
+                   "verification_path": "/runner/authorize?request=" + request_id,
+                   "expires_at": 2000, "interval": 5}
+        responses = [json_response(pending, 201),
+                     json_response({"status": "approved", "expires_at": 2000,
+                                    "experiment_id": "b" * 32}), json_response(device(), 201)]
+        with server(lambda *args: responses.pop(0)) as (origin, requests):
+            self.assertEqual(RunnerApi.start_authorization(origin, "lab-mac", "f" * 64), pending)
+            self.assertEqual(RunnerApi.poll_authorization(origin, request_id, "v" * 43)["status"], "approved")
+            self.assertEqual(RunnerApi.exchange_authorization(origin, request_id, "v" * 43), device())
+        self.assertEqual([entry[:2] for entry in requests], [
+            ("POST", "/api/runner-device/authorizations"),
+            ("POST", "/api/runner-device/authorizations/" + request_id + "/poll"),
+            ("POST", "/api/runner-device/authorizations/" + request_id + "/exchange")])
+        self.assertEqual(json.loads(requests[0][3]), {"device_name": "lab-mac", "challenge": "f" * 64})
+        for entry in requests:
+            self.assertNotIn("Authorization", entry[2])
+            self.assertNotIn("v" * 43, entry[1])
+        self.assertEqual(json.loads(requests[1][3]), {"verifier": "v" * 43})
+        self.assertEqual(json.loads(requests[2][3]), {"verifier": "v" * 43})
+
+    def test_authorization_rejects_invalid_start_and_poll_fields(self):
+        pending = {"request_id": "a" * 32, "user_code": "AAAA-AAAA",
+                   "verification_path": "/runner/authorize?request=" + "a" * 32,
+                   "expires_at": 2000, "interval": 5}
+        invalid = [None, [], {}, {**pending, "token": TOKEN}, {**pending, "status": "pending"}]
+        for field, values in {
+            "request_id": ["x", "A" * 32, None],
+            "user_code": ["BBBB-BBBB", "aaaa-aaaa", "AAAA-AAAA\n", None],
+            "verification_path": ["https://evil.test/", "//evil.test/", "/other", "\\evil.test",
+                                  pending["verification_path"] + "&token=secret", "/runner/authorize?request=" + "b" * 32],
+            "expires_at": [0, -1, True, float("inf"), 10 ** 400, "2000"],
+            "interval": [0, -1, True, 1.5, 901, "5"],
+        }.items():
+            invalid.extend({**pending, field: value} for value in values)
+        for value in invalid:
+            with self.subTest(value=value), patch("dbp_pgl_runner.api._json", return_value=value):
+                with self.assertRaises(ContractError):
+                    RunnerApi.start_authorization("https://example.org", "lab-mac", "f" * 64)
+        pending_poll = {"status": "pending", "expires_at": 2000}
+        invalid = [None, {}, {**pending_poll, "token": TOKEN}, {**pending_poll, "extra": 1},
+                   {**pending_poll, "experiment_id": "b" * 32}, {**pending_poll, "status": "approved"},
+                   {**pending_poll, "status": "unknown"}, {**pending_poll, "expires_at": True},
+                   {**pending_poll, "status": "approved", "experiment_id": "B" * 32}]
+        for value in invalid:
+            with self.subTest(value=value), patch("dbp_pgl_runner.api._json", return_value=value):
+                with self.assertRaises(ContractError):
+                    RunnerApi.poll_authorization("https://example.org", "a" * 32, "v" * 43)
+
+    def test_authorization_rejects_bad_inputs_before_network(self):
+        with server(lambda *args: json_response({})) as (origin, requests):
+            for challenge in ("x", "F" * 64, None):
+                with self.assertRaises(ContractError):
+                    RunnerApi.start_authorization(origin, "lab", challenge)
+            for operation in (RunnerApi.poll_authorization, RunnerApi.exchange_authorization):
+                for request_id, verifier in [("../bad", "v" * 43), ("a" * 32, "v" * 42),
+                                             ("a" * 32, "v" * 129), ("a" * 32, "v" * 43 + "=")]:
+                    with self.assertRaises(ContractError):
+                        operation(origin, request_id, verifier)
+        self.assertEqual(requests, [])
+
+    def test_authorization_redirects_oversize_and_error_bodies_are_refused_without_retries(self):
+        with server(lambda *args: json_response({})) as (other, stolen):
+            for status, headers, payload in [(307, {"Location": other + "/stolen"}, b""),
+                                              (200, {"Content-Length": 33 * 1024 * 1024}, b"{}"),
+                                              (429, {"Retry-After": "5"}, TOKEN.encode())]:
+                with server(lambda *args: (status, headers, payload)) as (origin, requests):
+                    with self.assertRaises(ApiError) as caught:
+                        RunnerApi.poll_authorization(origin, "a" * 32, "v" * 43)
+                    self.assertNotIn(TOKEN, str(caught.exception))
+                    self.assertNotIn("v" * 43, str(caught.exception))
+                    self.assertEqual(len(requests), 1)
+            self.assertEqual(stolen, [])
+
     def test_study_returns_bound_canonical_roster_in_server_order(self):
         document = {"schema_version": "dbp-pgl-study-v1", "mode": "integration_test", "pgl_ready": False,
                     "experiment_id": "b" * 32, "study_id": "c" * 32, "study_name": "Pilot study",
