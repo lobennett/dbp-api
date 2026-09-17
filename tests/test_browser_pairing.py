@@ -5,17 +5,18 @@ import json
 from pathlib import Path
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
 from dbp_pgl_runner.api import ApiError
 from dbp_pgl_runner.browser_pairing import BrowserPairing
-from dbp_pgl_runner.config import RunnerConfig
+from dbp_pgl_runner.config import RunnerConfig, save_pairing
 from dbp_pgl_runner.models import ContractError
 from dbp_pgl_runner.profiles import ConnectionProfiles
 from tests.fixtures import TOKEN, device
 from tests.http_fixture import server
-from tests.test_api import json_response
+from tests.test_api import json_response, trickle_server
 
 
 def study():
@@ -188,6 +189,76 @@ class BrowserPairingTests(unittest.TestCase):
                 self.assertNotIn(TOKEN, str(caught.exception))
         self.assertEqual(sum(path.endswith("/exchange") for _, path, *_ in requests), 1)
 
+    def test_transient_poll_failure_can_resume_same_proof_without_reopening_browser(self):
+        attempts = []
+        self.poll_states = ["approved"]
+
+        def respond(*args):
+            if args[1].endswith("/poll"):
+                attempts.append((self.clock.now, json.loads(args[3])["verifier"]))
+                if len(attempts) == 1:
+                    return 503, {}, b"temporary"
+            return self.respond(*args)
+
+        with server(respond) as (origin, requests):
+            pending = self.pairing.start(origin, "lab-mac")
+            with self.assertRaises(ApiError):
+                self.pairing.wait(pending, self.clock)
+            result = self.pairing.wait(pending, self.clock)
+        self.assertEqual(result["study_context"], study())
+        self.assertEqual(attempts[0][1], attempts[1][1])
+        self.assertGreaterEqual(attempts[1][0] - attempts[0][0], pending.interval)
+        self.assertEqual(len(self.opened), 1)
+        self.assertEqual(sum(path.endswith("/exchange") for _, path, *_ in requests), 1)
+
+    def test_transient_failure_does_not_extend_expiry(self):
+        with server(lambda *args: (503, {}, b"") if args[1].endswith("/poll")
+                    else self.respond(*args)) as (origin, requests):
+            pending = self.pairing.start(origin, "lab-mac")
+            with self.assertRaises(ApiError):
+                self.pairing.wait(pending, self.clock)
+            self.clock.now = self.expiry
+            with self.assertRaises(ApiError):
+                self.pairing.wait(pending, self.clock)
+        self.assertEqual(len(requests), 2)
+
+    def test_approval_reuses_saved_assignment_before_exchange_for_all_profile_names(self):
+        for name in ("default", "lab-manual", "practice-study-bbbbbbbb"):
+            self.poll_states = ["approved"]
+            with tempfile.TemporaryDirectory() as temporary, server(self.respond) as (origin, requests):
+                profiles = ConnectionProfiles(Path(temporary) / "connections")
+                profiles.base.mkdir(mode=0o700)
+                root = profiles.directory(name)
+                root.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+                save_pairing(root, origin, device(), allow_file_token=True)
+                before = {path.name: path.read_bytes() for path in root.iterdir() if path.is_file()}
+                pending = self.pairing.start(origin, "lab-mac")
+                result = self.pairing.wait(pending, self.clock, reuse=profiles.find_assignment)
+                self.assertEqual(result, {"profile_name": name})
+                self.assertEqual({path.name: path.read_bytes() for path in root.iterdir() if path.is_file()}, before)
+                with self.assertRaises(ApiError):
+                    self.pairing.wait(pending, self.clock)
+            self.assertEqual(len(requests), 2)
+            self.assertFalse(any(path.endswith("/exchange") for _, path, *_ in requests))
+
+    def test_assignment_lookup_failure_cannot_fall_through_to_exchange(self):
+        self.poll_states = ["approved", "approved"]
+        lookups = []
+
+        def reuse(origin, experiment_id):
+            lookups.append((origin, experiment_id))
+            if len(lookups) == 1:
+                raise ApiError("temporarily unavailable")
+            return None
+
+        with server(self.respond) as (origin, requests):
+            pending = self.pairing.start(origin, "lab-mac")
+            with self.assertRaises(ApiError):
+                self.pairing.wait(pending, self.clock, reuse=reuse)
+            self.assertFalse(any(path.endswith("/exchange") for _, path, *_ in requests))
+            self.assertEqual(self.pairing.wait(pending, self.clock, reuse=reuse)["study_context"], study())
+        self.assertEqual(lookups, [(origin, "b" * 32)] * 2)
+
     def test_concurrent_waiters_cannot_exchange_twice(self):
         self.poll_states = ["approved"]
         entered, release = threading.Event(), threading.Event()
@@ -267,3 +338,53 @@ class BrowserPairingTests(unittest.TestCase):
                 self.pairing.start(origin, "lab-mac")
         self.assertFalse(any(path.endswith("/exchange") for _, path, *_ in requests))
         self.assertEqual(len(self.opened), 1)
+
+
+class InFlightPairingTests(unittest.TestCase):
+    def test_continuous_trickle_cannot_outlive_cancellation_or_expiry_and_exchange_never_retries(self):
+        for phase in ("body", "headers"):
+            for suffix in ("/poll", "/exchange", "/identity", "/study"):
+                for cancellation in (True, False):
+                    cancel = threading.Event()
+                    expiry = time.time() + (20 if cancellation else 1.3)
+                    pairing = BrowserPairing()
+
+                    def respond(method, path, headers, body):
+                        if path.endswith("/authorizations"):
+                            return json_response({"request_id": "a" * 32, "user_code": "AAAA-AAAA",
+                                                  "verification_path": "/runner/authorize?request=" + "a" * 32,
+                                                  "expires_at": expiry, "interval": 1}, 201)
+                        if path.endswith("/poll"):
+                            return json_response({"status": "approved", "expires_at": expiry,
+                                                  "experiment_id": "b" * 32})
+                        return json_response({"exchange": device(), "identity": device_identity(),
+                                              "study": study()}[path.rsplit("/", 1)[1]],
+                                             201 if path.endswith("/exchange") else 200)
+
+                    with self.subTest(phase=phase, suffix=suffix, cancellation=cancellation):
+                        with trickle_server(respond, suffix, phase) as (origin, requests, entered, disconnected):
+                            with patch("dbp_pgl_runner.browser_pairing.webbrowser.open", return_value=True):
+                                pending = pairing.start(origin, "lab")
+
+                            def cancel_when_entered():
+                                if entered.wait(4):
+                                    cancel.set()
+
+                            canceller = threading.Thread(target=cancel_when_entered)
+                            if cancellation:
+                                canceller.start()
+                            started = time.monotonic()
+                            try:
+                                with self.assertRaises(ApiError):
+                                    pairing.wait(pending, cancel)
+                                self.assertLess(time.monotonic() - started, 1.9)
+                                self.assertTrue(entered.is_set())
+                                self.assertTrue(disconnected.wait(0.7))
+                                self.assertTrue(requests[-1][1].endswith(suffix))
+                                count = len(requests)
+                                with self.assertRaises(ApiError):
+                                    pairing.wait(pending, threading.Event())
+                                self.assertEqual(len(requests), count)
+                            finally:
+                                if cancellation:
+                                    canceller.join(4)

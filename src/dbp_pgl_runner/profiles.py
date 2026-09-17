@@ -12,7 +12,7 @@ import unicodedata
 from .api import RunnerApi
 from .config import (RunnerConfig, fsync_directory, preflight_config_directory,
                      private_directory, save_pairing, validate_origin, validate_token)
-from .models import ContractError, canonical_bytes, normalized, strict_json
+from .models import ContractError, canonical_bytes, identity, normalized, strict_json
 
 
 _NAME = re.compile(r"[a-z][a-z0-9-]{0,47}")
@@ -114,6 +114,26 @@ class ConnectionProfiles:
                     continue
                 names.append(entry.name)
         return result + sorted(names)
+
+    def find_assignment(self, origin, experiment_id):
+        """Find a safe saved assignment without issuing, replacing or copying tokens.
+
+        Prefer default, then sorted profile names. This is a local lookup, not a
+        claim that the saved credential is still authorized by the server.
+        """
+        origin = validate_origin(origin)
+        experiment_id = identity(experiment_id)
+        for name in self.names():
+            try:
+                root = self.directory(name)
+                config = RunnerConfig.load(root)
+                if config.server_origin != origin or config.experiment_id != experiment_id:
+                    continue
+                config.read_token(root)
+            except ContractError:
+                continue
+            return name
+        return None
 
     def publish(self, origin, device_response, study_context):
         """Verify live authority in memory, then publish or reuse without replacement.

@@ -43,6 +43,52 @@ class ProfileTests(unittest.TestCase):
         return self.profiles.connect(name, "https://example.org", "pair-code", "workstation",
                                      allow_file_token=True)
 
+    def test_find_assignment_searches_default_manual_and_automatic_profiles_without_writes(self):
+        self.assertIsNone(self.profiles.find_assignment("https://example.org", "b" * 32))
+        self.assertFalse(self.base.exists())
+        for name, experiment in [("default", "a" * 32), ("manual", "b" * 32),
+                                 ("practice-study-cccccccc", "c" * 32)]:
+            root = self.profiles.directory(name)
+            if name != "default":
+                root.parent.mkdir(mode=0o700, exist_ok=True)
+            save_pairing(root, "https://example.org", {**device(), "experiment_id": experiment},
+                         allow_file_token=True)
+        before = {str(path): path.read_bytes() for path in self.base.rglob("*") if path.is_file()}
+        for name, experiment in [("default", "a" * 32), ("manual", "b" * 32),
+                                 ("practice-study-cccccccc", "c" * 32)]:
+            self.assertEqual(self.profiles.find_assignment("https://example.org/", experiment), name)
+        self.assertIsNone(self.profiles.find_assignment("https://other.example", "b" * 32))
+        self.assertIsNone(self.profiles.find_assignment("https://example.org", "f" * 32))
+        self.assertEqual({str(path): path.read_bytes() for path in self.base.rglob("*") if path.is_file()}, before)
+
+    def test_find_assignment_skips_unsafe_profiles_and_credentials(self):
+        self.base.mkdir(mode=0o700)
+        parent = self.base / "profiles"
+        parent.mkdir(mode=0o700)
+        for name in ("bad-permissions", "bad-token", "missing-token", "linked-token", "safe"):
+            root = parent / name
+            config = save_pairing(root, "https://example.org", device(), allow_file_token=True)
+            if name == "bad-permissions":
+                root.chmod(0o755)
+            elif name == "bad-token":
+                (root / config.token_ref).chmod(0o644)
+            elif name == "missing-token":
+                (root / config.token_ref).unlink()
+            elif name == "linked-token":
+                (root / config.token_ref).rename(root / "original-token")
+                (root / config.token_ref).symlink_to(root / "original-token")
+        (parent / "linked-profile").symlink_to(parent / "safe", target_is_directory=True)
+        self.assertEqual(self.profiles.find_assignment("https://example.org", "b" * 32), "safe")
+
+    def test_find_assignment_prefers_default_and_rejects_unsafe_shared_roots(self):
+        save_pairing(self.base, "https://example.org", device(), allow_file_token=True)
+        (self.base / "profiles").mkdir(mode=0o700)
+        save_pairing(self.base / "profiles" / "manual", "https://example.org", device(), allow_file_token=True)
+        self.assertEqual(self.profiles.find_assignment("https://example.org", "b" * 32), "default")
+        self.base.chmod(0o755)
+        with self.assertRaises(ContractError):
+            self.profiles.find_assignment("https://example.org", "b" * 32)
+
     def test_publish_uses_verified_study_name_and_never_overwrites(self):
         with verified_server(device(), study_context()) as (origin, requests):
             name = self.profiles.publish(origin, device(), study_context())

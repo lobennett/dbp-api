@@ -1,9 +1,15 @@
 import json
 from copy import deepcopy
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import threading
+import time
+import socket
 import unittest
 from unittest.mock import patch
 
 from dbp_pgl_runner.api import ApiError, RangeNotSupported, RunnerApi
+from dbp_pgl_runner import api as api_module
 from dbp_pgl_runner.config import RunnerConfig
 from dbp_pgl_runner.models import BlockPackage, ContractError
 from tests.fixtures import MEDIA, TOKEN, block, device, seal
@@ -18,7 +24,144 @@ def json_response(value, status=200):
     return status, {"Content-Type": "application/json"}, json.dumps(value).encode()
 
 
+@contextmanager
+def trickle_server(responder, suffix, phase="body"):
+    entered, stopped, disconnected = threading.Event(), threading.Event(), threading.Event()
+    requests = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.handle_response()
+
+        def do_GET(self):
+            self.handle_response()
+
+        def handle_response(self):
+            body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            requests.append((self.command, self.path, dict(self.headers), body))
+            status, headers, payload = responder(self.command, self.path, self.headers, body)
+            slow = self.path.endswith(suffix)
+            try:
+                if slow and phase == "headers":
+                    self.connection.sendall(f"HTTP/1.1 {status} OK\r\nX-Trickle: ".encode())
+                else:
+                    self.send_response(status)
+                    for name, value in headers.items():
+                        self.send_header(name, str(value))
+                    self.send_header("Content-Length", str(len(payload) + (40 if slow else 0)))
+                    self.end_headers()
+                if slow:
+                    entered.set()
+                    for _ in range(40):
+                        if stopped.wait(0.03):
+                            return
+                        self.connection.sendall(b"x" if phase == "headers" else b" ")
+                    if phase == "headers":
+                        self.connection.sendall(b"\r\nConnection: close\r\n\r\n")
+                self.connection.sendall(payload)
+            except OSError:
+                disconnected.set()
+
+        def log_message(self, *args):
+            pass
+
+    instance = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=instance.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{instance.server_port}", requests, entered, disconnected
+    finally:
+        stopped.set()
+        instance.shutdown()
+        instance.server_close()
+        thread.join()
+
+
 class ApiTests(unittest.TestCase):
+    def test_cancelled_connection_cannot_send_a_late_request(self):
+        entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+        request_seen = threading.Event()
+        connect = socket.create_connection
+
+        def delayed_connect(*args, **kwargs):
+            entered.set()
+            if not release.wait(3):
+                raise OSError("test connection was not released")
+            try:
+                return connect(*args, **kwargs)
+            finally:
+                finished.set()
+
+        cancel = threading.Event()
+        def respond(*args):
+            request_seen.set()
+            return json_response({})
+
+        with server(respond) as (origin, requests):
+            with patch("socket.create_connection", side_effect=delayed_connect):
+                budget = api_module.RequestBudget(time.monotonic() + 0.15, cancel)
+                try:
+                    with self.assertRaises(ApiError):
+                        RunnerApi.exchange_authorization(origin, "a" * 32, "v" * 43, budget=budget)
+                    self.assertTrue(entered.is_set())
+                finally:
+                    release.set()
+                self.assertTrue(finished.wait(1))
+                self.assertFalse(request_seen.wait(0.2))
+            self.assertEqual(requests, [])
+
+    def test_bounded_transport_preserves_redirect_size_and_localhost_rules(self):
+        with server(lambda *args: json_response({})) as (other, stolen):
+            for status, headers, body in [(307, {"Location": other}, b""),
+                                          (200, {"Content-Length": 33 * 1024 * 1024}, b"{}")]:
+                with server(lambda *args: (status, headers, body)) as (origin, requests):
+                    with self.assertRaises(ApiError):
+                        RunnerApi.poll_authorization(origin, "a" * 32, "v" * 43,
+                                                     budget=api_module.RequestBudget(time.monotonic() + 2,
+                                                                                     threading.Event()))
+                    self.assertEqual(len(requests), 1)
+            self.assertEqual(stolen, [])
+        with server(lambda *args: json_response({"status": "pending", "expires_at": 2000})) as (origin, requests):
+            result = RunnerApi.poll_authorization(origin.replace("127.0.0.1", "localhost"),
+                                                  "a" * 32, "v" * 43,
+                                                  budget=api_module.RequestBudget(time.monotonic() + 2,
+                                                                                  threading.Event()))
+            self.assertEqual(result["status"], "pending")
+            for invalid in ("http://example.org", "http://localhost.evil", "http://127.0.0.1.evil"):
+                with self.assertRaises(ContractError):
+                    RunnerApi.poll_authorization(invalid, "a" * 32, "v" * 43,
+                                                 budget=api_module.RequestBudget(time.monotonic() + 2,
+                                                                                 threading.Event()))
+            self.assertEqual(len(requests), 1)
+
+    def test_request_budget_interrupts_trickling_headers_and_body_and_closes_socket(self):
+        for phase in ("headers", "body"):
+            for cancellation in (True, False):
+                cancel = threading.Event()
+                with self.subTest(phase=phase, cancellation=cancellation):
+                    with trickle_server(lambda *args: json_response({"status": "pending", "expires_at": 2000}),
+                                        "/poll", phase) as (origin, requests, entered, disconnected):
+                        timer = threading.Timer(0.15, cancel.set)
+                        if cancellation:
+                            timer.start()
+                        started = time.monotonic()
+                        before = set(threading.enumerate())
+                        budget = api_module.RequestBudget(started + (5 if cancellation else 0.15), cancel)
+                        try:
+                            with self.assertRaises(ApiError):
+                                RunnerApi.poll_authorization(origin, "a" * 32, "v" * 43, budget=budget)
+                            self.assertLess(time.monotonic() - started, 0.7)
+                            self.assertTrue(entered.is_set())
+                            self.assertTrue(disconnected.wait(0.7))
+                            for worker in set(threading.enumerate()) - before:
+                                if worker.name == "runner-authorization-http":
+                                    worker.join(0.7)
+                                    self.assertFalse(worker.is_alive())
+                        finally:
+                            if cancellation:
+                                timer.join()
+                        self.assertEqual(len(requests), 1)
+
     def test_browser_authorization_contract_and_single_exchange(self):
         request_id = "a" * 32
         pending = {"request_id": request_id, "user_code": "AAAA-AAAA",
