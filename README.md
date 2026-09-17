@@ -38,6 +38,63 @@ For Jupyter, install/register the environment once, then select its kernel:
 
 ## Website → pilot → saved results
 
+### Coordinator launcher (recommended)
+
+Open `dbp-pgl launch`, or double-click `launch-pilot.command` in a source
+checkout on a Mac. The latter finds a local Python 3.12+ with Tk; set
+`DBP_PGL_PYTHON` to use a specific installed interpreter. It does not install
+anything, start a web server, or start PGL automatically. PGL and FFmpeg must be
+installed in that interpreter/environment before actual presentation.
+
+1. On the updated website, publish the study's **integration assignment** and
+   choose **Pair workstation**.
+2. In the launcher, choose **Pair study**, enter a new connection name, the
+   website origin, and its hidden one-time code. Explicitly approve private-file
+   credential storage.
+3. Select the saved connection. Check the study name, server, and published
+   assignment ID, then select an assigned subject from the dropdown.
+4. **Prepare videos**, acknowledge non-participant use, then **Start test**.
+   The confirmation identifies the exact assignment and subject. Preparing
+   verifies media hashes; starting also fully decodes videos before presentation.
+5. Inspect the saved-results path and upload status. **Retry upload** never
+   replays the videos. An existing attempt prevents starting again; interruptions
+   require the explicit recovery/review workflow below.
+
+The pairing code, not the subject ID, identifies the study. Each device
+credential is restricted to one immutable published assignment. The launcher
+supports several saved connections without broadening any credential's access:
+select a different connection to switch studies. Publishing a revised assignment
+requires a new pairing; it does not retarget an existing one. Subjects are fetched
+from the paired assignment rather than guessed or entered into Python code.
+
+Existing CLI connections appear as **default**. New connections live at
+`~/.config/dbp-pgl/profiles/<name>` and never overwrite existing configurations.
+The CLI can use the same connection explicitly:
+
+```sh
+dbp-pgl --config-dir ~/.config/dbp-pgl/profiles/hands-pilot status subject-001
+```
+
+The launcher uses the existing runner, not a second task implementation. PGL
+runs on the main thread of a separate Python process while the launcher remains
+responsive. It uses the entire integration block, labelled day 1/block 1, with
+the existing 12-second description and 50-degree width defaults. These are not
+approved participant session settings. The workstation profile fields select
+installed PGL lab settings; scientific scheduling remains a separate validation.
+The launcher disables Start when its Python cannot find PGL or is not a supported
+macOS/Python version. Preparation and result inspection remain available.
+At launch, a private temporary credential/configuration snapshot binds the child
+to the confirmed connection even if the original profile changes; it is removed
+when the child exits. Native console output is drained into a bounded memory
+buffer rather than an unbounded log on the results disk.
+
+Use the updated local website until the live server includes
+`GET /api/runner-device/study` and the other runner endpoints. Starting only the
+launcher does not make an older website compatible. Tk is an optional local
+desktop requirement; normal CLI commands do not import it.
+
+### Command line / notebook
+
 1. On the **updated** local browser or live website, save a study, publish its
    integration-test assignment, and choose **Pair workstation**.
 2. Pair this computer: `dbp-pgl connect`.
@@ -194,6 +251,13 @@ PYTHONPATH=.:tests .venv/bin/python -m unittest tests.test_study_runner_integrat
 ```
 
 This verifies software integration, not actual display/input/eye-tracker behavior.
+For an opt-in local test of the actual Tk controls with a mocked presentation
+process (no task display or participant data):
+
+```sh
+DBP_TEST_GUI=1 PYTHONPATH=src python3.12 -m unittest tests.test_launcher -v
+```
+
 Before participants, Justin/the study team must confirm conditions, foil/repeat
 timing, interruptions and subject/day/block mapping, then run a non-participant
 lab test and inspect native outputs.

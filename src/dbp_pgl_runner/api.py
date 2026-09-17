@@ -107,6 +107,34 @@ class RunnerApi:
             raise ContractError("Block does not match configured experiment and requested subject")
         return package
 
+    def study(self):
+        value = _json(self.config.server_origin, "/api/runner-device/study", self._token)
+        if type(value) is not dict or set(value) != {
+                "schema_version", "mode", "pgl_ready", "experiment_id", "study_id", "study_name", "subjects"}:
+            raise ContractError("Invalid study response fields")
+        if (value["schema_version"] != "dbp-pgl-study-v1"
+                or value["mode"] != "integration_test" or value["pgl_ready"] is not False):
+            raise ContractError("Study context must use the integration-only study schema")
+        if identity(value["experiment_id"]) != self.config.experiment_id:
+            raise ContractError("Study does not match configured experiment")
+        identity(value["study_id"])
+        normalized(value["study_name"], 120)
+        subjects = value["subjects"]
+        if type(subjects) is not list or not 1 <= len(subjects) <= 100:
+            raise ContractError("Study requires 1 to 100 subjects")
+        seen = set()
+        for subject in subjects:
+            if type(subject) is not dict or set(subject) != {"subject_id", "trial_count"}:
+                raise ContractError("Invalid study subject fields")
+            subject_id = canonical_subject(subject["subject_id"])
+            if subject_id != subject["subject_id"] or subject_id in seen:
+                raise ContractError("Study subjects must be unique canonical identities")
+            count = subject["trial_count"]
+            if type(count) is not int or not 1 <= count <= 50_000:
+                raise ContractError("Invalid study trial count")
+            seen.add(subject_id)
+        return value
+
     def claim_attempt(self, package, attempt_id):
         if package.experiment_id != self.config.experiment_id:
             raise ContractError("Attempt package belongs to another experiment")

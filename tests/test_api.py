@@ -1,5 +1,7 @@
 import json
+from copy import deepcopy
 import unittest
+from unittest.mock import patch
 
 from dbp_pgl_runner.api import ApiError, RangeNotSupported, RunnerApi
 from dbp_pgl_runner.config import RunnerConfig
@@ -17,6 +19,48 @@ def json_response(value, status=200):
 
 
 class ApiTests(unittest.TestCase):
+    def test_study_returns_bound_canonical_roster_in_server_order(self):
+        document = {"schema_version": "dbp-pgl-study-v1", "mode": "integration_test", "pgl_ready": False,
+                    "experiment_id": "b" * 32, "study_id": "c" * 32, "study_name": "Pilot study",
+                    "subjects": [{"subject_id": "subject-100", "trial_count": 50000},
+                                 {"subject_id": "subject-001", "trial_count": 1}]}
+        with server(lambda *args: json_response(document)) as (origin, requests):
+            self.assertEqual(RunnerApi(config(origin), TOKEN).study(), document)
+        self.assertEqual(requests[0][0:2], ("GET", "/api/runner-device/study"))
+        self.assertEqual(requests[0][2]["Authorization"], "Bearer " + TOKEN)
+
+    def test_study_rejects_malformed_unbound_or_ambiguous_documents(self):
+        document = {"schema_version": "dbp-pgl-study-v1", "mode": "integration_test", "pgl_ready": False,
+                    "experiment_id": "b" * 32, "study_id": "c" * 32, "study_name": "Pilot study",
+                    "subjects": [{"subject_id": "subject-001", "trial_count": 1}]}
+        invalid = [[], None, {}, {**document, "extra": True}]
+        for field, values in {
+            "schema_version": ["future", None],
+            "mode": ["production", None],
+            "pgl_ready": [True, 0, None],
+            "experiment_id": ["a" * 32, None, 1],
+            "study_id": ["bad", "C" * 32, None, 1],
+            "study_name": ["", " Pilot", "Pilot ", "Pilot\n", "x" * 121, None],
+            "subjects": [[], {}, None, document["subjects"] * 2, document["subjects"] * 101],
+        }.items():
+            for value in values:
+                invalid.append({**document, field: value})
+        for subject in [None, {}, {"subject_id": "subject-001", "trial_count": 1, "extra": 2}]:
+            invalid.append({**document, "subjects": [subject]})
+        for field, values in {
+            "subject_id": ["s001", "subject-000", "subject-101", "subject-1", None, 1],
+            "trial_count": [0, -1, 50001, True, 1.0, "1", None],
+        }.items():
+            for value in values:
+                changed = deepcopy(document)
+                changed["subjects"][0][field] = value
+                invalid.append(changed)
+        api = RunnerApi(config("https://example.org"), TOKEN)
+        for value in invalid:
+            with self.subTest(value=value), patch("dbp_pgl_runner.api._json", return_value=value):
+                with self.assertRaises(ContractError):
+                    api.study()
+
     def test_attempt_endpoints_are_bound_and_uploads_are_bounded(self):
         attempt_id = "e" * 32
         package = BlockPackage.from_dict(block())

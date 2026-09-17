@@ -28,6 +28,15 @@ class StudyRunner:
         config = RunnerConfig.load(self.config_dir)
         return config, RunnerApi(config, config.read_token(self.config_dir))
 
+    def study(self):
+        _, api = self._connection()
+        return api.study()
+
+    def pairing_identity(self):
+        config = RunnerConfig.load(self.config_dir)
+        return {"server_origin": config.server_origin, "device_id": config.device_id,
+                "experiment_id": config.experiment_id}
+
     def prepare(self, subject):
         config, api = self._connection()
         api.identity()
