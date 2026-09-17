@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dbp-pgl-runner"
-version = "0.1.0"
-description = "Integration-only verified offline preparation for DBP/PGL"
+version = "0.2.0"
+description = "Digital Brain study preparation, PGL pilot execution, durable results and synchronization"
 requires-python = ">=3.11"
 dependencies = []
 
 [project.optional-dependencies]
-experiment = ["pgl @ git+https://github.com/lobennett/pgl.git@11888d9ff7945194420f35eb7b8f1721903f0a66 ; sys_platform == 'darwin'"]
+experiment = ["pgl @ git+https://github.com/lobennett/pgl.git@c664dc796b41b622ccdc28a0454e0cd213faa777 ; sys_platform == 'darwin' and python_version >= '3.12'"]
 
 [project.scripts]
 dbp-pgl = "dbp_pgl_runner.cli:main"

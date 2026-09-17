@@ -1,208 +1,199 @@
-# DBP PGL runner — integration STARTED
+# Digital Brain PGL runner
 
-**Non-participant preparation only. `pgl_ready` is always false.** This separate
-wrapper pairs a workstation, downloads the exact server-sealed media, builds a
-fixed-order PGL manifest, and verifies the prepared files offline. It does **not**
-run an experiment or synchronize results. Both `run` and `sync` return nonzero
-before accessing credentials, making requests, importing PGL, or opening devices.
+Fetch a saved study from the Digital Brain browser, prepare its exact videos,
+run Justin's Digital Brain PGL task, save native results and a durable trial
+journal, and synchronize results back to the website. Use the same workflow from
+the command line or [the pilot notebook](examples/digital_brain_pilot.ipynb).
 
-## Install and test
+**Non-participant integration pilot.** The software can execute PGL, but this is
+not certification of the scientific protocol, timing, display, response device,
+or eye tracker. Packages remain `pgl_ready: false`. Hardware validation and study
+approval are separate from the automated tests. No paid hosting is needed.
 
-Use Python **3.11+** on macOS or Linux. The runtime uses only Python's standard
-library; file locking and private-file checks require POSIX. No deployment, billing,
-or paid service is involved. Use the wrapper interpreter, not a Python 3.10 website
-environment.
+## Install
+
+Use **Python 3.12+ on macOS for PGL execution**. Preparation, journals and sync
+also work on POSIX with Python 3.11+. The wrapper uses the standard library.
 
 ```sh
-python3 -m venv .venv
-.venv/bin/python -m pip install -e .
-.venv/bin/python -m unittest discover -s tests -v
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -e '.[experiment]'
+source .venv/bin/activate
 ```
 
-Without installation:
+The experiment extra pins the PGL fork to an exact commit in `pyproject.toml`.
+PGL requires its native macOS build prerequisites and lab configuration.
+FFmpeg must be installed locally for the full video-decode check. Pass
+`--ffmpeg /absolute/path/to/ffmpeg` if it is not on `PATH`.
+For preparation/synchronization without native PGL: `pip install -e .`.
+Upstream PGL currently uses Python 3.12 syntax despite a less restrictive
+package declaration; do not install the experiment extra into Python 3.11.
+
+For Jupyter, install/register the environment once, then select its kernel:
+
+```sh
+.venv/bin/python -m pip install ipykernel
+.venv/bin/python -m ipykernel install --user --name dbp-pgl --display-name 'Python 3.12 (DBP PGL)'
+```
+
+## Website → pilot → saved results
+
+1. On the **updated** local browser or live website, save a study, publish its
+   integration-test assignment, and choose **Pair workstation**.
+2. Pair this computer: `dbp-pgl connect`.
+3. Run one synthetic subject: `dbp-pgl run s001 --integration-test`.
+4. Inspect results: `dbp-pgl status s001`.
+5. Retry synchronization without presenting again: `dbp-pgl sync s001`.
+
+`run` automatically prepares media, fully checks decoding, reserves an exclusive
+attempt, launches real PGL, saves locally, and tries to synchronize afterward.
+The notebook offers the same sequence. Alternatively:
+
+```sh
+python examples/digital_brain_pilot.py run s001 --integration-test
+```
+
+Preparation can be done ahead of time with `dbp-pgl prepare s001`.
+`run --no-sync` retains results locally for later synchronization.
+Use `--settings-name` and `--display-name` for installed PGL profiles;
+`--day`, `--block`, `--description-seconds`, and `--display-width` configure the
+integration pilot. Defaults match the notebook's 12-second description and
+50-degree width; lab calibration determines whether they are appropriate.
+
+**The live website must run the corresponding server integration.** Updating this
+package does not update the website. Use a current local instance until the live
+server has the runner APIs; deployment is not part of this package.
+
+## Python / Jupyter
+
+```python
+from dbp_pgl_runner.runner import StudyRunner
+from dbp_pgl_runner.pgl_adapter import RunSettings
+
+runner = StudyRunner()
+prepared = runner.prepare("s001")
+result = runner.run("s001", integration_test=True,
+                    settings=RunSettings(day=1, block=1))
+runner.status("s001")
+runner.sync("s001")
+```
+
+For a notebook with an already-configured PGL instance, import `PglAdapter` and
+pass `adapter=PglAdapter(engine=your_pgl_instance)` to `runner.run`. The wrapper
+still owns the experiment, manifest, output directory, journal and cleanup;
+do not also call the original notebook's `e.run()` independently.
+
+The returned `attempt_root` contains:
+
+```text
+<work-root>/<experiment>/<device>/<subject>/attempts/<attempt-id>/
+  attempt.json
+  reservation.json
+  decode.json
+  journal.json
+  events.jsonl
+  native/<experiment>/<subject>/dayN/<attempt-id>/...
+  artifact-manifest.json
+  sync-receipt.json
+```
+
+Native PGL files include settings, state, responses, task parameters, and
+eye-tracker output when configured. Required native files must exist before
+completion is recorded. `sync-receipt.json` appears only after the server confirms
+the exact result inventory. Completed presentation and successful upload are
+separate states. Refresh **PGL runs** in the website for received progress;
+there are deliberately no network requests during presentation.
+
+## Interrupted sessions
+
+- Escape or an exception does not imply every trial completed. The journal
+  distinguishes loading, possible exposure, playback return, response collection,
+  persisted responses and completed trials.
+- Interrupt handling attempts native saving and display/device cleanup. A hard
+  process kill or power loss cannot guarantee native output; earlier durable
+  journal records survive. Cleanup failure is not scientific completion.
+- An interrupted attempt is never silently replayed. After a crash:
+
+  ```sh
+  dbp-pgl status s001
+  dbp-pgl recover s001 --terminate
+  dbp-pgl sync s001
+  ```
+
+  Only if an incomplete final journal fragment is reported, explicitly add
+  `--repair-tail`. Earlier corruption or a complete altered record remains an error.
+- Re-exposure requires a new reviewed study assignment. There is no automatic
+  continue/replay policy for participant memory experiments.
+- Failed synchronization never requires re-running PGL. Identical event and
+  artifact retries are safe; conflicting replacements are rejected.
+- The exclusive reservation does not silently expire while an offline experiment
+  may still run. If a workstation is lost, an owner must confirm it has stopped
+  before explicitly terminating its reservation.
+
+## Integrity and limits
+
+The server owns order and conditions; the wrapper never shuffles or assigns
+subjects. Integration mapping: parent → `new-integration-parent`, repeat →
+`old-integration-repeat`, foil → `new-integration-foil`. These are **not an approved
+scientific schedule**. Day/block settings are not inferred scientific allocation.
+
+Videos download into a SHA-256 cache with byte-range resume. Each trial gets a
+unique basename, including repeated clips, because PGL consumes a basename
+manifest. Media hashes are checked again before execution and each distinct video
+is completely decoded with FFmpeg. Presentation uses only local files. Limits:
+32 MiB/video, 2 GiB distinct media/subject package. Larger studies need appropriate
+compressed renditions or reviewed blocks rather than bypassing these bounds.
+
+Foils are rendered subclips of their assigned intervals, never full parents with
+different labels. The server requires `DBP_RUNNER_FFMPEG_PATH` and sibling `ffprobe`.
+Missing tools or failed interval validation stop preparation.
+
+Journal appends are flushed, fsynced, sequence-numbered and hash-chained. PGL hook
+times mark API boundaries, **not measured frame onset**. `response_saved` stores
+the description in the native task and durable journal; native files are verified
+separately at exit.
+
+Artifacts exclude stimuli/credentials, reject symlinks/traversal, and are sealed
+before upload in chunks ≤1 MiB. Bounds: 1,024 files, 256 MiB/file, 1 GiB/attempt.
+Larger eye-tracker files need a reviewed extension. The server verifies file hashes,
+exact journal bytes, milestones, native inventory and final manifest. Checksums
+protect integrity, not against an authorized workstation fabricating an experiment.
+
+## Credentials and storage
+
+Use HTTPS for live origins, or HTTP only on literal loopback/localhost. The old
+public HTTP-only site is not a safe credential endpoint; an authenticated SSH
+tunnel to loopback is an alternative. Redirects and implicit environment proxies
+are refused. Pairing codes/tokens never appear in command-line arguments.
+
+`connect` uses hidden input and asks for private-file storage consent. Optional
+flags: `--server`, `--device-name`, `--allow-file-token`. Keychain is not implemented;
+secrets use owned mode-0600 files inside a mode-0700 directory. Native outputs are
+private. Never commit credentials, participant responses, journals, media, or databases.
+
+Global `--config-dir`, `--cache-root`, `--work-root` options precede the command.
+Defaults: `~/.config/dbp-pgl`, `~/.local/share/dbp-pgl/cache`,
+`~/.local/share/dbp-pgl/work`. Cache/work directories must be private, separate and
+non-nested. Re-pairing retains previous tokens; revoke old devices and remove
+unused tokens deliberately. Subjects: `s001`–`s100` / `subject-001`–`subject-100`.
+
+## Verification
 
 ```sh
 PYTHONPATH=src python3 -m unittest discover -s tests -v
-PYTHONPATH=src python3 -m dbp_pgl_runner --help
 ```
 
-The optional `experiment` extra pins package `pgl` to reviewed fork commit
-`11888d9ff7945194420f35eb7b8f1721903f0a66` on macOS, including Justin's upstream
-`main` through `ddfd54d` plus the prepared-block path extension. Installing it does **not** enable
-execution. PGL's build requires its native macOS toolchain and additional library
-prerequisites; none is needed for preparation or these tests. No PGL import occurs
-in the wrapper. The fork's `pgl/pglImage.py` defines `pglMovieDatabase` and
-`useManifest`; the manifest must name the loaded files by **basename**, not absolute
-path. Each trial therefore gets a unique basename, including repeated clips.
-
-## Coordinator workflow
-
-Create a one-time pairing code in the website's saved-experiment runner panel.
-Use a synthetic integration subject, not real participant data.
-
-```sh
-dbp-pgl connect
-dbp-pgl prepare s001
-dbp-pgl status s001
-```
-
-`connect` prompts for the server origin, consent to private-file credential storage,
-and a **hidden** pairing code. `--server https://example.org`, `--device-name lab-mac`,
-and `--allow-file-token` are optional connect flags; there is intentionally no
-command-line token or pairing-code option. Hidden input fails closed if a terminal
-cannot disable echo. Do not pipe secrets through shell commands or paste them into
-logs. Pairing exchange is one-shot, with no automatic retry.
-
-HTTPS is required except for `localhost` or a literal loopback IP, for example
-`http://127.0.0.1:8000`. HTTP loopback is for the isolated local integration harness,
-not remote workstation operation. Origins cannot contain userinfo, query strings,
-fragments, or non-root paths. All redirects are refused, including same-origin
-redirects; environment HTTP proxies are disabled. Signed external media URLs and
-GCS delivery are not supported by this rollout.
-
-Configuration defaults to `~/.config/dbp-pgl/config.json` (0600). The secret lives
-in a separate random `token-<hex>` file (0600) under the private 0700 directory.
-**The macOS Keychain backend is pending.** File storage requires explicit flag or
-interactive consent and is suitable only for this integration harness. Existing
-insecure permissions and symlink files are rejected rather than silently repaired.
-Re-pairing retains old token files to avoid destroying credentials still referenced
-by a prior config; revoke obsolete devices on the website and remove obsolete
-token files deliberately. Never commit configuration or credentials.
-
-The global options `--config-dir`, `--cache-root`, and `--work-root` precede the
-subcommand. Cache and work roots must be private, distinct, and non-nested:
-
-```sh
-dbp-pgl --cache-root /private/tmp/dbp-cache --work-root /private/tmp/dbp-work prepare s001
-```
-
-Aliases are exactly `s001` through `s100`, or `subject-001` through `subject-100`.
-The server response must match both the configured experiment and that canonical
-subject. The server owns trial order and conditions; the wrapper never constructs
-an assignment, shuffles trials, or substitutes a parent for a foil interval.
-
-## Preparation and status semantics
-
-`prepare` checks the device identity, fetches a sealed block, validates its exact
-schema and `package_sha256`, checks free space, and streams media in chunks of at
-most 1 MiB. Downloads are sequential. Unique content is bounded to 32 MiB by the
-server contract. A cache entry is named by SHA-256 and becomes visible only after
-length/digest verification, fsync, and atomic replacement of its partial name.
-
-Interrupted downloads retain private `.partial` prefixes. A later preparation
-requests the remaining range and checks its exact `Content-Range`. If the server
-ignores Range, preparation truncates the partial and restarts at zero. The full
-result must still match the sealed checksum. A corrupt completed cache entry is
-never silently overwritten or deleted; investigate and remove it manually before
-retrying. Previously verified cache files survive a failed preparation.
-
-Prepared blocks are stored under:
-
-```text
-<work-root>/<experiment-id>/<device-id>/<canonical-subject>/<package-id>/
-  block.json
-  manifest.csv
-  readiness.json
-  trial-00000-<media-sha256>.mp4
-  trial-00001-<media-sha256>.mp4
-```
-
-The media basenames correspond one-to-one to trials. Repeated media use distinct
-hardlinks to the verified cache, or verified copies if the roots are on different
-filesystems. The CSV columns are `filename,trial_index,condition`; indices and
-integration condition labels come unchanged from the server. Never edit the media,
-manifest, block, or receipt. Files are published read-only, but the workstation
-owner can still change them; this is not an OS-enforced immutable archive.
-
-The complete block directory is staged privately, fsynced, and atomically renamed.
-Only then is its subject's `current.json` pointer atomically updated. Existing
-package IDs cannot be replaced with changed documents. Repeated preparation checks
-the existing block without rewriting its files. Advisory locks prevent concurrent
-wrapper writers; process death releases locks automatically. A power/process loss
-may leave an unreferenced `.prepare-*` staging directory; it is never considered
-ready and can be removed after confirming no preparation is active.
-
-`status` does not contact the server or require the secret token. It revalidates
-the block digest, exact manifest order and file set, receipt/workstation binding,
-and **all media hashes**, not merely sizes. It returns nonzero for missing,
-changed, linked, or inconsistent data. The receipt binds the package, manifest,
-per-trial inventory, time, wrapper version, origin, and device identity. It is a
-SHA-256 integrity checksum, **not a keyed signature** and not protection against a
-malicious workstation owner replacing all files and checksums.
-
-Successful output states `preparation_ready: true`, `integration_status: STARTED`,
-and `pgl_ready: false`. This means byte-integrity preparation only. Offline status
-does not prove current authorization, lease ownership, media decoding, display or
-input readiness, approved protocol mapping, or participant readiness.
-
-## Interfaces for integration tests
-
-```python
-from dbp_pgl_runner.api import RunnerApi
-from dbp_pgl_runner.config import RunnerConfig, save_pairing
-from dbp_pgl_runner.prepare import prepare_subject, status_subject
-
-response = RunnerApi.pair(origin, pairing_code, device_name)
-config = save_pairing(config_dir, origin, response, allow_file_token=True)
-api = RunnerApi(config, config.read_token(config_dir))
-api.identity()
-prepared = prepare_subject(api, config, "s001", cache_root, work_root)
-verified = status_subject(config, "s001", work_root)
-assert verified == prepared
-assert prepared.package.pgl_ready is False
-```
-
-`RunnerConfig(server_origin, device_id, experiment_id, token_ref)` is frozen and
-validates its fields. `token_ref` must be `token-` plus 32 lowercase hex characters.
-`RunnerConfig.load(config_dir)` reads the stored non-secret config.
-`PreparedBlock` is frozen with `.root: pathlib.Path` and `.package: BlockPackage`.
-`BlockPackage.to_dict()` returns an independent copy of the exact sealed document;
-`.trials` is an immutable tuple of frozen `Trial` values.
-
-`api.next_block(subject_alias) -> BlockPackage` requests
-`GET /api/runner-device/subjects/{quoted-alias}/next`.
-`api.iter_media(package, trial, *, offset=0)` yields bytes from
-`GET /api/runner-device/blocks/{package_id}/media/{quoted-clip_id}`.
-The pairing and identity routes are respectively
-`POST /api/runner-device/pairings/exchange` and
-`GET /api/runner-device/identity`. No attempt/event/upload methods are advertised.
-Errors are `ContractError`, `ApiError`, or storage `OSError`; network exceptions
-omit response bodies and credential-bearing detail. No requests retry implicitly.
-
-The standalone validator mirrors the server contract without importing its
-allocation/database dependencies. The optional sibling-fixture test compares
-canonical UTF-8 sealing against `dbp-dataset-browser/tests/test_study_runner_contract.py`;
-it skips when that checkout is absent. HTTP tests use generated bytes and ephemeral
-local servers, not repository media or participants. The separate website test
-suite owns the real cross-repository HTTP integration.
-
-The actual website-to-wrapper loopback test has passed: pairing exchange, saved
-credentials, authenticated identity, preparation, exact basename manifest and media
-hash verification, stable repeated preparation, HTTP server shutdown, and offline
-status verification. Reproduce from the sibling **website** checkout with the
-wrapper checkout beside it:
+Tests cover execution, interrupts, duplicate synchronization, altered artifacts,
+unsafe paths, credentials, notebook syntax and native adapter cleanup with
+headless test doubles. In the sibling website checkout, the real HTTP test covers
+pairing → preparation → reservation → journal → native-shaped test outputs → upload
+→ idempotent finalization → offline inspection:
 
 ```sh
 PYTHONPATH=.:tests .venv/bin/python -m unittest tests.test_study_runner_integration.WrapperIntegrationTests -v
 ```
 
-The website uses its own interpreter and launches the Python 3.11+ wrapper as a
-separate process. This proves preparation integration, **not** launch or result
-synchronization; both remain disabled.
-
-## Explicitly pending — execution remains blocked
-
-- Approved trial-milestone journal, crash/restart semantics, and recovery after
-  exposure; no silent replay after `stimulus_started`.
-- Reviewed PGL adapter, actual decode checks, display/input/hardware validation,
-  native artifact capture, safe stop, and interruption handling.
-- Server-issued attempts, exclusive leases, heartbeat, append-only event ingestion,
-  artifact sealing/upload, synchronization, and QA receipts.
-- Study-team approval of real new/old conditions, day/block mapping, foil intervals,
-  and interrupted-exposure policy. Integration labels are not scientific conditions.
-- Keychain credential storage, signed external media support, and any production
-  hosting/security review.
-
-`dbp-pgl run s001` and `dbp-pgl sync s001` deliberately fail with exit code 2. There
-is no override, experimental bypass flag, fake completion, or simulated upload.
-Prepared media alone must never be used to claim the full design is implemented.
+This verifies software integration, not actual display/input/eye-tracker behavior.
+Before participants, Justin/the study team must confirm conditions, foil/repeat
+timing, interruptions and subject/day/block mapping, then run a non-participant
+lab test and inspect native outputs.

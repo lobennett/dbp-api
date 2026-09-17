@@ -1,6 +1,8 @@
 """Bounded same-origin requests; redirects and implicit retries are forbidden."""
 
 from contextlib import contextmanager
+import base64
+import hashlib
 import http.client
 import json
 from urllib.error import HTTPError, URLError
@@ -9,7 +11,7 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 
 from .config import validate_origin, validate_token
 from .models import (BlockPackage, ContractError, MAX_JSON_BYTES, canonical_subject,
-                     identity, is_finite_number, normalized, strict_json)
+                     canonical_bytes, identity, is_finite_number, normalized, strict_json)
 
 
 class ApiError(RuntimeError):
@@ -105,12 +107,55 @@ class RunnerApi:
             raise ContractError("Block does not match configured experiment and requested subject")
         return package
 
+    def claim_attempt(self, package, attempt_id):
+        if package.experiment_id != self.config.experiment_id:
+            raise ContractError("Attempt package belongs to another experiment")
+        result = _json(self.config.server_origin,
+                       "/api/runner-device/blocks/" + identity(package.package_id) + "/attempts",
+                       self._token, canonical_bytes({"attempt_id": identity(attempt_id)}), expected_status=201)
+        expected = {"attempt_id": attempt_id, "package_id": package.package_id,
+                    "package_sha256": package.package_sha256, "experiment_id": package.experiment_id,
+                    "subject_id": package.subject_id, "device_id": self.config.device_id}
+        if type(result) is not dict or any(result.get(key) != value for key, value in expected.items()):
+            raise ContractError("Attempt reservation identity mismatch")
+        return result
+
+    def attempt_status(self, attempt_id):
+        result = _json(self.config.server_origin, "/api/runner-device/attempts/" + identity(attempt_id), self._token)
+        if type(result) is not dict or result.get("attempt_id") != attempt_id:
+            raise ContractError("Attempt status identity mismatch")
+        return result
+
+    def _attempt_post(self, attempt_id, suffix, body):
+        encoded = canonical_bytes(body)
+        if len(encoded) > 2 * 1024 * 1024:
+            raise ContractError("Runner request exceeds server body limit")
+        return _json(self.config.server_origin, "/api/runner-device/attempts/" + identity(attempt_id) + suffix,
+                     self._token, encoded)
+
+    def append_events(self, attempt_id, events):
+        if type(events) is not list or not events or len(events) > 16:
+            raise ContractError("Send one to sixteen journal events per batch")
+        return self._attempt_post(attempt_id, "/events", {"events": events})
+
+    def upload_chunk(self, attempt_id, artifact, chunk_index, content):
+        if (type(content) is not bytes or len(content) > 1024 * 1024
+                or type(chunk_index) is not int or chunk_index < 0):
+            raise ContractError("Invalid bounded artifact chunk")
+        body = {"path": artifact["path"], "chunk_index": chunk_index, "file_bytes": artifact["bytes"],
+                "file_sha256": artifact["sha256"], "chunk_sha256": hashlib.sha256(content).hexdigest(),
+                "data_base64": base64.b64encode(content).decode("ascii")}
+        return self._attempt_post(attempt_id, "/artifacts/" + identity(artifact["artifact_id"]) + "/chunks", body)
+
+    def finalize_attempt(self, attempt_id, manifest):
+        return self._attempt_post(attempt_id, "/finalize", manifest)
+
     def iter_media(self, package, trial, *, offset=0):
         if (package.experiment_id != self.config.experiment_id or trial not in package.trials
                 or type(offset) is not int or not 0 <= offset < trial.media_bytes):
             raise ContractError("Media request identity or offset is invalid")
-        path = ("/api/runner-device/blocks/" + identity(package.package_id) + "/media/"
-                + quote(trial.clip_id, safe=""))
+        path = ("/api/runner-device/blocks/" + identity(package.package_id)
+                + f"/trials/{trial.trial_index}/media")
         headers = {"Range": f"bytes={offset}-"} if offset else {}
         with _request(self.config.server_origin, path, token=self._token, headers=headers) as response:
             if offset and response.status == 200:

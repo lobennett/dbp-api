@@ -17,6 +17,30 @@ def json_response(value, status=200):
 
 
 class ApiTests(unittest.TestCase):
+    def test_attempt_endpoints_are_bound_and_uploads_are_bounded(self):
+        attempt_id = "e" * 32
+        package = BlockPackage.from_dict(block())
+        response = {"attempt_id": attempt_id, "package_id": package.package_id,
+                    "experiment_id": package.experiment_id, "device_id": "d" * 32,
+                    "subject_id": package.subject_id, "package_sha256": package.package_sha256}
+        with server(lambda *args: json_response(response, 201)) as (origin, requests):
+            api = RunnerApi(config(origin), TOKEN)
+            self.assertEqual(api.claim_attempt(package, attempt_id)["attempt_id"], attempt_id)
+            self.assertEqual(json.loads(requests[0][3]), {"attempt_id": attempt_id})
+            response["device_id"] = "f" * 32
+            with self.assertRaises(ContractError):
+                api.claim_attempt(package, attempt_id)
+        with server(lambda *args: json_response({})) as (origin, requests):
+            api = RunnerApi(config(origin), TOKEN)
+            entry = {"artifact_id": "c" * 32, "path": "native/data.json", "bytes": 3,
+                     "sha256": "f" * 64}
+            api.upload_chunk(attempt_id, entry, 0, b"abc")
+            body = json.loads(requests[0][3])
+            self.assertEqual(body["data_base64"], "YWJj")
+            self.assertEqual(body["chunk_index"], 0)
+            with self.assertRaises(ContractError):
+                api.upload_chunk(attempt_id, entry, 1, b"x" * (1024 * 1024 + 1))
+
     def test_huge_device_timestamps_raise_contract_error(self):
         for field in ("created_at", "last_used_at"):
             response = device()
@@ -49,7 +73,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(json.loads(requests[0][3]),
                          {"code": "pair-secret", "device_name": "test workstation"})
         self.assertEqual(requests[1][1], "/api/runner-device/subjects/s001/next")
-        self.assertEqual(requests[2][1], "/api/runner-device/blocks/" + "a" * 32 + "/media/clip%20one")
+        self.assertEqual(requests[2][1], "/api/runner-device/blocks/" + "a" * 32 + "/trials/0/media")
         self.assertEqual(requests[1][2]["Authorization"], "Bearer " + TOKEN)
 
     def test_redirect_never_leaks_bearer_or_pairing_secret(self):

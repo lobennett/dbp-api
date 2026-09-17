@@ -13,14 +13,12 @@ from tests.test_api import json_response
 
 
 class CliTests(unittest.TestCase):
-    def test_run_and_sync_fail_closed_without_config_network_or_pgl(self):
-        for command in ["run", "sync"]:
-            output = io.StringIO()
-            with redirect_stderr(output), redirect_stdout(output):
-                result = main([command, "s001"])
-            self.assertNotEqual(result, 0)
-            self.assertIn("not implemented", output.getvalue())
-            self.assertIn("pgl_ready=false", output.getvalue())
+    def test_run_requires_explicit_nonparticipant_acknowledgement(self):
+        output = io.StringIO()
+        with redirect_stderr(output), redirect_stdout(output):
+            result = main(["run", "s001"])
+        self.assertNotEqual(result, 0)
+        self.assertIn("--integration-test", output.getvalue())
 
     def test_no_command_line_secret_option(self):
         for option in ["--token", "--code", "--pairing-code"]:

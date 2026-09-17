@@ -10,6 +10,20 @@ from tests.fixtures import block, seal
 
 
 class ModelTests(unittest.TestCase):
+    def test_foil_can_have_distinct_bytes_from_its_parent(self):
+        source = block()
+        foil = dict(source["trials"][0], trial_index=2, role="foil", condition="new-integration-foil",
+                    media_path="media/foil.mp4", media_sha256="f" * 64)
+        source["trials"].append(foil)
+        self.assertEqual(len(BlockPackage.from_dict(seal(source)).trials), 3)
+
+    def test_block_can_exceed_single_video_limit_without_unbounded_video(self):
+        source = block()
+        source["trials"] = [dict(source["trials"][0], trial_index=index, clip_id=f"clip-{index}",
+                                 media_path=f"media/{index}.mp4", media_sha256=f"{index:064x}",
+                                 media_bytes=32 * 1024 * 1024) for index in range(3)]
+        self.assertEqual(len(BlockPackage.from_dict(seal(source)).trials), 3)
+
     def test_sealed_package_and_trials_are_independent_and_immutable(self):
         source = block()
         parsed = BlockPackage.from_dict(source)

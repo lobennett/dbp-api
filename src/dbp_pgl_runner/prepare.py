@@ -110,10 +110,11 @@ def _verify_prepared(config, subject, root, expected_digest):
                 "manifest_sha256": hashlib.sha256(manifest).hexdigest(), "files": _inventory(package),
                 "server_origin": config.server_origin, "workstation_id": config.device_id,
                 "experiment_id": config.experiment_id, "subject_id": subject, "pgl_ready": False,
-                "wrapper_version": __version__}
+                "wrapper_version": receipt.get("wrapper_version")}
     prepared_at = receipt.pop("prepared_at", None)
     if (not is_finite_number(prepared_at) or prepared_at <= 0
-            or receipt != expected or receipt.get("pgl_ready") is not False):
+            or receipt != expected or receipt.get("pgl_ready") is not False
+            or receipt.get("wrapper_version") not in ("0.1.0", __version__)):
         raise ContractError("Invalid preparation receipt or workstation binding")
     expected_files = {item["filename"] for item in expected["files"]} | {
         "block.json", "manifest.csv", "readiness.json"}

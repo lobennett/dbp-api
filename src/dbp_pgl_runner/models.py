@@ -9,6 +9,7 @@ import re
 
 
 MAX_MEDIA_BYTES = 32 * 1024 * 1024
+MAX_BLOCK_MEDIA_BYTES = 2 * 1024 * 1024 * 1024
 MAX_JSON_BYTES = 32 * 1024 * 1024
 IDENTITY = re.compile(r"[0-9a-f]{32}")
 SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -159,12 +160,13 @@ class BlockPackage:
             if type(digest) is not str or not SHA256.fullmatch(digest):
                 raise ContractError("Invalid media SHA-256")
             for mapping, key, bound in [(paths, path, (size, digest)),
-                                         (digests, digest, size), (clips, clip, (size, digest))]:
+                                         (digests, digest, size),
+                                         (clips, (clip, "foil" if role == "foil" else "full"), (size, digest))]:
                 if key in mapping and mapping[key] != bound:
                     raise ContractError("Conflicting media identity")
                 mapping[key] = bound
-        if sum(digests.values()) > MAX_MEDIA_BYTES:
-            raise ContractError("Distinct media exceed 32 MiB")
+        if sum(digests.values()) > MAX_BLOCK_MEDIA_BYTES:
+            raise ContractError("Distinct block media exceed 2 GiB")
         document["trials"] = tuple(Trial(**trial) for trial in trials)
         return cls(**document, package_sha256=value["package_sha256"])
 

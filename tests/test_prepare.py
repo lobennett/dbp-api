@@ -79,6 +79,15 @@ class PreparationTests(unittest.TestCase):
         with self.assertRaises(ContractError):
             status_subject(self.config, "s001", self.work)
 
+    def test_preparation_from_previous_release_remains_verifiable(self):
+        prepared = self.prepare()
+        receipt = prepared.root / "readiness.json"
+        document = json.loads(receipt.read_text())
+        document["wrapper_version"] = "0.1.0"
+        receipt.chmod(0o600)
+        receipt.write_text(json.dumps(seal(document, "receipt_sha256")))
+        self.assertEqual(status_subject(self.config, "s001", self.work).package, prepared.package)
+
     def test_manifest_uses_unique_verified_basenames_in_fixed_server_order(self):
         prepared = self.prepare()
         rows = list(csv.DictReader(io.StringIO((prepared.root / "manifest.csv").read_text())))
