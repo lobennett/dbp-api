@@ -13,15 +13,19 @@ import threading
 from .api import ApiError
 from .config import RunnerConfig, atomic_write
 from .models import ContractError, canonical_bytes, canonical_subject, strict_json
-from .pgl_adapter import RunSettings
+from .pgl_adapter import RunSettings, native_renderer_problem
 from .runner import StudyRunner, study_label
 
 
 def runtime_problem():
     if sys.platform != "darwin" or sys.version_info < (3, 12):
         return "Presentation requires macOS and Python 3.12+. Preparation and upload are still available."
-    if importlib.util.find_spec("pgl") is None:
+    specification = importlib.util.find_spec("pgl")
+    if specification is None:
         return "PGL is not installed in this Python. Install the experiment extra before starting a test."
+    renderer_problem = native_renderer_problem(specification.origin)
+    if renderer_problem:
+        return renderer_problem
     return None
 
 
@@ -210,7 +214,7 @@ class LauncherWindow:
         options.columnconfigure(1, weight=1)
         self.ffmpeg = tk.StringVar()
         self.settings_name = tk.StringVar()
-        self.display_name = tk.StringVar()
+        self.display_name = tk.StringVar(value="Windowed")
         for row, (label, variable) in enumerate((("FFmpeg path (optional)", self.ffmpeg),
                                                 ("PGL settings profile", self.settings_name),
                                                 ("PGL display profile", self.display_name))):

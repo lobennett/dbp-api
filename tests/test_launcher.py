@@ -188,6 +188,18 @@ class LauncherTests(unittest.TestCase):
               patch("dbp_pgl_runner.launcher.importlib.util.find_spec", return_value=None)):
             self.assertIn("PGL is not installed", runtime_problem())
 
+    def test_pgl_without_native_renderer_is_explained_before_start(self):
+        from dbp_pgl_runner.launcher import runtime_problem
+        with tempfile.TemporaryDirectory() as root:
+            package_file = Path(root) / "site-packages" / "pgl" / "__init__.py"
+            package_file.parent.mkdir(parents=True)
+            package_file.write_text("")
+            spec = SimpleNamespace(origin=str(package_file))
+            with (patch("dbp_pgl_runner.launcher.sys.platform", "darwin"),
+                  patch("dbp_pgl_runner.launcher.sys.version_info", (3, 12)),
+                  patch("dbp_pgl_runner.launcher.importlib.util.find_spec", return_value=spec)):
+                self.assertIn("native renderer", runtime_problem())
+
 
 @unittest.skipUnless(os.environ.get("DBP_TEST_GUI") == "1", "Opt-in local desktop Tk test")
 class LauncherWindowTests(unittest.TestCase):
@@ -213,6 +225,9 @@ class LauncherWindowTests(unittest.TestCase):
             self.root.update()
             time.sleep(0.01)
         self.assertFalse(self.window.busy)
+
+    def test_local_rehearsal_defaults_to_windowed_display(self):
+        self.assertEqual(self.window.display_name.get(), "Windowed")
 
     def browser_pairing(self, result=None, *, start_error=None, wait_error=None):
         pairing = Mock()

@@ -83,6 +83,7 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual(experiment.saves, 1)
             self.assertEqual(experiment.closes, 1)
             self.assertEqual(experiment.movie_path, Path(root) / "movies")
+            self.assertEqual(experiment.experimentSettings.subjectID, "s0001")
             self.assertTrue(result.native_path.is_relative_to((Path(root) / "native").resolve()))
 
     def test_interrupt_preserves_native_data_and_closes(self):
@@ -113,3 +114,13 @@ class AdapterTests(unittest.TestCase):
         for kwargs in ({"description_seconds": -1}, {"display_width": 0}, {"day": True}):
             with self.subTest(kwargs=kwargs), self.assertRaises(ContractError):
                 RunSettings(**kwargs)
+
+    def test_preflight_rejects_installation_without_native_renderer(self):
+        with tempfile.TemporaryDirectory() as root:
+            package_file = Path(root) / "site-packages" / "pgl" / "__init__.py"
+            package_file.parent.mkdir(parents=True)
+            package_file.write_text("")
+            incomplete = module()
+            incomplete.__file__ = str(package_file)
+            with self.assertRaisesRegex(ContractError, "native renderer"):
+                PglAdapter(module=incomplete).preflight()
