@@ -106,10 +106,13 @@ desktop requirement; normal CLI commands do not import it.
 
 ### Command line / notebook
 
-1. On the **updated** local browser or live website, save a study, publish its
-   integration-test assignment, and choose **Pair workstation**.
-2. Pair this computer: `dbp-pgl connect`.
-3. Set the selected browser-created profile before run, status, or sync:
+#### Browser-selected named profile
+
+1. Complete Coordinator launcher steps 1–3 above: choose **Choose study in
+   browser**, approve the published integration-test assignment, and select its
+   saved connection. Browser pairing creates the selected named profile; do not
+   run manual `dbp-pgl connect` for this workflow.
+2. Set that selected profile before every CLI or script entry point:
 
 ```sh
 PROFILE=~/.config/dbp-pgl/profiles/<selected-profile>
@@ -121,10 +124,14 @@ dbp-pgl --config-dir "$PROFILE" sync s001
 
 `run` automatically prepares media, fully checks decoding, reserves an exclusive
 attempt, launches real PGL, saves locally, and tries to synchronize afterward.
-The notebook offers the same sequence. Alternatively:
+The notebook offers the same sequence. The pilot script uses the selected profile
+only when `--config-dir` is passed before its command:
 
 ```sh
-python examples/digital_brain_pilot.py run s001 --integration-test
+python examples/digital_brain_pilot.py --config-dir "$PROFILE" prepare s001
+python examples/digital_brain_pilot.py --config-dir "$PROFILE" run s001 --integration-test
+python examples/digital_brain_pilot.py --config-dir "$PROFILE" status s001
+python examples/digital_brain_pilot.py --config-dir "$PROFILE" sync s001
 ```
 
 `dbp-pgl --config-dir "$PROFILE" prepare s001` can be done ahead of time.
@@ -133,6 +140,21 @@ Use `--settings-name` and `--display-name` for installed PGL profiles;
 `--day`, `--block`, `--description-seconds`, and `--display-width` configure the
 integration pilot. Defaults match the notebook's 12-second description and
 50-degree width; lab calibration determines whether they are appropriate.
+
+#### Manual/default CLI recovery fallback
+
+Use this path only when browser authorization is unavailable. Manual
+`dbp-pgl connect` pairs with the website's one-time code into the default
+`~/.config/dbp-pgl` connection; it is a different workflow from a browser-created
+named profile. Keep every following command on that same default connection:
+
+```sh
+dbp-pgl connect
+dbp-pgl prepare s001
+dbp-pgl run s001 --integration-test
+dbp-pgl status s001
+dbp-pgl sync s001
+```
 
 **The live website must run the corresponding server integration.** Updating this
 package does not update the website. Use a current local instance until the live
