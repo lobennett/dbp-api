@@ -46,19 +46,27 @@ checkout on a Mac. The latter finds a local Python 3.12+ with Tk; set
 anything, start a web server, or start PGL automatically. PGL and FFmpeg must be
 installed in that interpreter/environment before actual presentation.
 
-1. On the updated website, publish the study's **integration assignment** and
-   choose **Pair workstation**.
-2. In the launcher, choose **Pair study**, enter a new connection name, the
-   website origin, and its hidden one-time code. Explicitly approve private-file
-   credential storage.
-3. Select the saved connection. Check the study name, server, and published
-   assignment ID, then select an assigned subject from the dropdown.
-4. **Prepare videos**, acknowledge non-participant use, then **Start test**.
-   The confirmation identifies the exact assignment and subject. Preparing
-   verifies media hashes; starting also fully decodes videos before presentation.
-5. Inspect the saved-results path and upload status. **Retry upload** never
+1. Start an updated local website, enter its literal loopback URL (or an HTTPS
+   URL) in the launcher, and choose **Choose study in browser**.
+2. Sign in in the browser if needed. Compare the displayed code with the
+   launcher's code, select one of your published integration assignments, and
+   approve it. The launcher polls, exchanges once, verifies the device and study,
+   then creates a private, study-derived saved connection; it never receives the
+   browser password or session.
+3. Select that verified connection. Check its study name, origin, immutable
+   assignment ID, and roster, then choose `subject-001` from the assigned-subject
+   dropdown.
+4. Choose **Prepare videos**, inspect the package/manifest and runtime checks,
+   acknowledge non-participant use, then choose **Start test**. The final
+   confirmation names the exact assignment and subject. Preparation verifies
+   media hashes; starting also fully decodes videos before presentation.
+5. Inspect the saved-results path and upload state. **Retry upload** never
    replays the videos. An existing attempt prevents starting again; interruptions
    require the explicit recovery/review workflow below.
+6. If browser authorization is unavailable, reveal **Manual pairing…** and use
+   the website's one-time code with explicit private-file-storage consent. It is
+   recovery-only, not the normal study-selection workflow. Revoke a lost or
+   retired workstation from the website before discarding its local profile.
 
 The pairing code, not the subject ID, identifies the study. Each device
 credential is restricted to one immutable published assignment. The launcher
@@ -243,11 +251,14 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 Tests cover execution, interrupts, duplicate synchronization, altered artifacts,
 unsafe paths, credentials, notebook syntax and native adapter cleanup with
 headless test doubles. In the sibling website checkout, the real HTTP test covers
-pairing → preparation → reservation → journal → native-shaped test outputs → upload
-→ idempotent finalization → offline inspection:
+browser authorization → authenticated assignment approval → one-time
+exchange/profile publication → subject selection → preparation → reservation →
+journal → clearly synthetic native-shaped test outputs → upload → idempotent
+finalization → offline inspection:
 
 ```sh
-PYTHONPATH=.:tests .venv/bin/python -m unittest tests.test_study_runner_integration.WrapperIntegrationTests -v
+DBP_PGL_RUNNER_SOURCE=/absolute/path/to/dbp-pgl-runner/src \\
+  PYTHONPATH=.:tests .venv/bin/python -m unittest tests.test_study_runner_integration.WrapperIntegrationTests -v
 ```
 
 This verifies software integration, not actual display/input/eye-tracker behavior.
