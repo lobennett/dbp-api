@@ -4,10 +4,13 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import Mock, patch
+from types import SimpleNamespace
 
+from dbp_pgl_runner.api import ApiError
 from dbp_pgl_runner.models import ContractError
 from dbp_pgl_runner.launcher import LauncherModel, run_in_child
 from dbp_pgl_runner.config import RunnerConfig, save_pairing
@@ -210,6 +213,148 @@ class LauncherWindowTests(unittest.TestCase):
             self.root.update()
             time.sleep(0.01)
         self.assertFalse(self.window.busy)
+
+    def browser_pairing(self, result=None, *, start_error=None, wait_error=None):
+        pairing = Mock()
+        pending = SimpleNamespace(origin="http://127.0.0.1:8769", user_code="AAAA-BBBB")
+        pairing.start.side_effect = start_error
+        pairing.start.return_value = pending
+        pairing.wait.side_effect = wait_error
+        pairing.wait.return_value = result
+        self.window.browser_pairing = pairing
+        return pairing, pending
+
+    def test_url_to_browser_selection_populates_study_without_typed_name(self):
+        runner = Mock()
+        runner.study.return_value = study()
+        runner.pairing_identity.return_value = {"server_origin": "http://127.0.0.1:8769",
+                                                "device_id": "d" * 32, "experiment_id": "b" * 32}
+        pairing, pending = self.browser_pairing({"device_response": device(), "study_context": study()})
+        self.window.profiles.publish = Mock(return_value="practice-study-bbbbbbbb")
+        self.window.profiles.names = Mock(return_value=["practice-study-bbbbbbbb"])
+        self.window.origin.set("http://127.0.0.1:8769")
+        with patch("dbp_pgl_runner.launcher.StudyRunner", return_value=runner):
+            self.window.choose_study_button.invoke()
+            self.wait()
+        self.assertEqual(self.window.study["values"], ("Practice study · bbbbbbbb",))
+        self.assertEqual(self.window.subject.get(), "")
+        self.assertIn("subject-001", self.window.subjects["values"])
+        pairing.wait.assert_called_once()
+        self.assertIs(pairing.wait.call_args.args[0], pending)
+        self.assertIsInstance(pairing.wait.call_args.args[1], threading.Event)
+        self.assertIs(pairing.wait.call_args.kwargs["reuse"].__self__, self.window.profiles)
+        self.window.profiles.publish.assert_called_once_with("http://127.0.0.1:8769",
+                                                             device_response=device(), study_context=study())
+        self.assertNotIn("pgl", sys.modules)
+
+    def test_start_names_exact_study_subject_and_trial_count(self):
+        runner = Mock()
+        runner.study.return_value = study()
+        runner.pairing_identity.return_value = {"server_origin": "http://localhost:8000",
+                                                "device_id": "d" * 32, "experiment_id": "b" * 32}
+        runner.status.return_value = {"preparation_ready": True, "trial_count": 2}
+        self.window.profiles.names = Mock(return_value=["practice-study-bbbbbbbb"])
+        with patch("dbp_pgl_runner.launcher.StudyRunner", return_value=runner):
+            self.window.refresh_profiles()
+            self.window.select_study("practice-study-bbbbbbbb")
+            self.wait()
+        self.window.select_subject("subject-001")
+        self.window.prepare_button.invoke()
+        self.wait()
+        self.window.ack.set(True)
+        self.window.update_controls()
+        with patch("tkinter.messagebox.askokcancel", return_value=False) as confirm:
+            self.window.start_button.invoke()
+        prompt = confirm.call_args.args[1]
+        self.assertIn("Practice study", prompt)
+        self.assertIn("subject-001", prompt)
+        self.assertIn("2 assigned trials", prompt)
+        self.assertIn("day 1/block 1", prompt)
+        self.assertIn("not an approved participant schedule", prompt)
+
+    def test_browser_pairing_failures_do_not_publish_or_replay(self):
+        failures = (
+            ("browser", ApiError("Could not open authorization in the browser"), None),
+            ("denied", None, ApiError("Authorization denied")),
+            ("expired", None, ApiError("Authorization expired")),
+        )
+        for name, start_error, wait_error in failures:
+            with self.subTest(name=name):
+                pairing, _ = self.browser_pairing(start_error=start_error, wait_error=wait_error)
+                self.window.profiles.publish = Mock()
+                self.window.choose_study_button.invoke()
+                self.wait()
+                self.assertIn(str(start_error or wait_error), self.window.status_text.get())
+                self.window.profiles.publish.assert_not_called()
+                self.assertEqual(pairing.start.call_count, 1)
+                self.assertLessEqual(pairing.wait.call_count, 1)
+
+    def test_cancelling_browser_pairing_does_not_publish_or_replay(self):
+        pairing = Mock()
+        pending = SimpleNamespace(origin="http://127.0.0.1:8769", user_code="AAAA-BBBB")
+        pairing.start.return_value = pending
+        entered = threading.Event()
+
+        def wait_for_cancel(_, cancel_event, *, reuse):
+            entered.set()
+            cancel_event.wait(5)
+            raise ApiError("Authorization cancelled")
+
+        pairing.wait.side_effect = wait_for_cancel
+        self.window.browser_pairing = pairing
+        self.window.profiles.publish = Mock()
+        self.window.choose_study_button.invoke()
+        deadline = time.monotonic() + 5
+        while not entered.is_set() and time.monotonic() < deadline:
+            self.root.update()
+            time.sleep(0.01)
+        self.assertTrue(entered.is_set())
+        self.window.cancel_pairing_button.invoke()
+        self.wait()
+        self.assertIn("cancelled", self.window.status_text.get().lower())
+        self.window.profiles.publish.assert_not_called()
+        pairing.start.assert_called_once()
+
+    def test_reused_saved_study_is_not_published_and_revocation_clears_it(self):
+        pairing, _ = self.browser_pairing({"profile_name": "practice-study-bbbbbbbb"})
+        self.window.profiles.publish = Mock()
+        self.window.profiles.names = Mock(return_value=["practice-study-bbbbbbbb"])
+        runner = Mock()
+        runner.pairing_identity.return_value = {"server_origin": "http://127.0.0.1:8769",
+                                                "device_id": "d" * 32, "experiment_id": "b" * 32}
+        runner.study.side_effect = ContractError("Saved study has been revoked")
+        with patch("dbp_pgl_runner.launcher.StudyRunner", return_value=runner):
+            self.window.choose_study_button.invoke()
+            self.wait()
+        self.window.profiles.publish.assert_not_called()
+        self.assertEqual(self.window.study.get(), "")
+        self.assertIn("revoked", self.window.status_text.get())
+        self.assertEqual(pairing.start.call_count, 1)
+
+    def test_runtime_problem_keeps_start_disabled_after_preparation(self):
+        self.window.runtime_problem = "PGL is not installed"
+        runner = Mock()
+        runner.study.return_value = study()
+        runner.pairing_identity.return_value = {"server_origin": "http://localhost:8000",
+                                                "device_id": "d" * 32, "experiment_id": "b" * 32}
+        runner.status.return_value = {"preparation_ready": True, "trial_count": 2}
+        self.window.profiles.names = Mock(return_value=["practice-study-bbbbbbbb"])
+        with patch("dbp_pgl_runner.launcher.StudyRunner", return_value=runner):
+            self.window.refresh_profiles()
+            self.window.select_study("practice-study-bbbbbbbb")
+            self.wait()
+        self.window.select_subject("subject-001")
+        self.window.prepare_button.invoke()
+        self.wait()
+        self.window.ack.set(True)
+        self.window.update_controls()
+        self.assertIn("disabled", self.window.start_button.state())
+
+    def test_manual_pairing_stays_hidden_until_advanced_recovery_is_opened(self):
+        self.assertEqual(self.window.manual_pairing_button.winfo_manager(), "")
+        self.window.advanced_recovery.set(True)
+        self.window.update_advanced_recovery()
+        self.assertEqual(self.window.manual_pairing_button.winfo_manager(), "grid")
 
     def test_real_widgets_select_prepare_confirm_and_retry_upload(self):
         runner = Mock()

@@ -9,6 +9,11 @@ from .models import ContractError
 from .workflow import attempt_status, recover_subject, run_subject, sync_subject
 
 
+def study_label(context):
+    """Return the coordinator-facing label for a verified study assignment."""
+    return f"{context['study_name']} · {context['experiment_id'][:8]}"
+
+
 class StudyRunner:
     def __init__(self, *, config_dir=None, cache_root=None, work_root=None):
         self.config_dir = Path(config_dir or Path.home() / ".config/dbp-pgl")

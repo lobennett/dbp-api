@@ -14,7 +14,7 @@ from .api import ApiError
 from .config import RunnerConfig, atomic_write
 from .models import ContractError, canonical_bytes, canonical_subject, strict_json
 from .pgl_adapter import RunSettings
-from .runner import StudyRunner
+from .runner import StudyRunner, study_label
 
 
 def runtime_problem():
@@ -137,6 +137,7 @@ class LauncherWindow:
     def __init__(self, root, *, config_dir, cache_root, work_root):
         import tkinter as tk
         from tkinter import ttk
+        from .browser_pairing import BrowserPairing
         from .profiles import ConnectionProfiles
 
         self.root = root
@@ -146,12 +147,16 @@ class LauncherWindow:
         self.cache_root = cache_root
         self.work_root = work_root
         self.model = None
+        self.browser_pairing = BrowserPairing()
+        self.pending_pairing = None
+        self.pair_cancel = None
+        self.profile_labels = {}
         self.runtime_problem = runtime_problem()
         self.busy = False
         self.events = queue.Queue()
         self.controls = []
         root.title("Digital Brain · Pilot launcher")
-        root.minsize(660, 590)
+        root.minsize(660, 620)
         root.protocol("WM_DELETE_WINDOW", self.close)
         body = ttk.Frame(root, padding=24)
         body.grid(sticky="nsew")
@@ -162,27 +167,45 @@ class LauncherWindow:
             row=0, column=0, columnspan=3, sticky="w")
         ttk.Label(body, text="Non-participant testing only · No task starts automatically").grid(
             row=1, column=0, columnspan=3, sticky="w", pady=(4, 20))
-        ttk.Label(body, text="1  Connection").grid(row=2, column=0, sticky="w", padx=(0, 14))
+        ttk.Label(body, text="1  Website").grid(row=2, column=0, sticky="w", padx=(0, 14))
+        self.origin = tk.StringVar(value="http://127.0.0.1:8769")
+        self.origins = ttk.Combobox(body, textvariable=self.origin, state="readonly",
+                                    values=("http://127.0.0.1:8769", "http://localhost:8769"))
+        self.origins.grid(row=2, column=1, sticky="ew")
+        self.controls.append((self.origins, "readonly"))
+        self.choose_study_button = self.button(body, "Choose study in browser", self.choose_study_in_browser)
+        self.choose_study_button.grid(row=2, column=2, padx=(10, 0))
+        self.cancel_pairing_button = ttk.Button(body, text="Cancel", command=self.cancel_browser_pairing,
+                                                state="disabled")
+        self.cancel_pairing_button.grid(row=2, column=3, padx=(8, 0))
+        ttk.Label(body, text="2  Study").grid(row=3, column=0, sticky="w")
         self.connection = tk.StringVar()
-        self.connections = ttk.Combobox(body, textvariable=self.connection, state="readonly")
-        self.connections.grid(row=2, column=1, sticky="ew")
-        self.connections.bind("<<ComboboxSelected>>", lambda event: self.load_connection())
-        self.controls.append((self.connections, "readonly"))
-        self.button(body, "Pair study…", self.pair).grid(row=2, column=2, padx=(10, 0))
-        self.context_text = tk.StringVar(value="Choose a saved connection, or pair a study from the website.")
+        self.study = ttk.Combobox(body, textvariable=self.connection, state="readonly")
+        self.study.grid(row=3, column=1, sticky="ew")
+        self.study.bind("<<ComboboxSelected>>", lambda event: self.load_connection())
+        self.controls.append((self.study, "readonly"))
+        self.advanced_recovery = tk.BooleanVar(value=False)
+        advanced = ttk.Checkbutton(body, text="Advanced / recovery", variable=self.advanced_recovery,
+                                   command=self.update_advanced_recovery)
+        advanced.grid(row=3, column=2, padx=(10, 0))
+        self.controls.append((advanced, "normal"))
+        self.manual_pairing_button = self.button(body, "Manual pairing…", self.manual_pairing)
+        self.manual_pairing_button.grid(row=4, column=1, sticky="w")
+        self.manual_pairing_button.grid_remove()
+        self.context_text = tk.StringVar(value="Choose a study in the browser, or select a verified saved study.")
         ttk.Label(body, textvariable=self.context_text, wraplength=600).grid(
-            row=3, column=0, columnspan=3, sticky="w", pady=(12, 18))
-        ttk.Label(body, text="2  Subject").grid(row=4, column=0, sticky="w")
+            row=5, column=0, columnspan=4, sticky="w", pady=(12, 18))
+        ttk.Label(body, text="3  Subject").grid(row=6, column=0, sticky="w")
         self.subject = tk.StringVar()
         self.subjects = ttk.Combobox(body, textvariable=self.subject, state="readonly")
-        self.subjects.grid(row=4, column=1, sticky="ew")
+        self.subjects.grid(row=6, column=1, sticky="ew")
         self.subjects.bind("<<ComboboxSelected>>", lambda event: self.choose_subject())
         self.controls.append((self.subjects, "readonly"))
-        self.button(body, "Refresh study", self.load_connection).grid(row=4, column=2, padx=(10, 0))
+        self.button(body, "Refresh study", self.load_connection).grid(row=6, column=2, padx=(10, 0))
         self.trials_text = tk.StringVar(value="Select an assigned subject; IDs are never typed into code.")
-        ttk.Label(body, textvariable=self.trials_text).grid(row=5, column=0, columnspan=3, sticky="w", pady=12)
+        ttk.Label(body, textvariable=self.trials_text).grid(row=7, column=0, columnspan=4, sticky="w", pady=12)
         options = ttk.LabelFrame(body, text="Workstation settings (configured by the lab)", padding=10)
-        options.grid(row=6, column=0, columnspan=3, sticky="ew")
+        options.grid(row=8, column=0, columnspan=4, sticky="ew")
         options.columnconfigure(1, weight=1)
         self.ffmpeg = tk.StringVar()
         self.settings_name = tk.StringVar()
@@ -199,13 +222,13 @@ class LauncherWindow:
         self.ack = tk.BooleanVar(value=False)
         acknowledgement = ttk.Checkbutton(body, text="This is a non-participant rehearsal, not data collection.",
                                            variable=self.ack, command=self.update_controls)
-        acknowledgement.grid(row=7, column=0, columnspan=3, sticky="w", pady=16)
+        acknowledgement.grid(row=9, column=0, columnspan=4, sticky="w", pady=16)
         self.controls.append((acknowledgement, "normal"))
         actions = ttk.Frame(body)
-        actions.grid(row=8, column=0, columnspan=3, sticky="w")
-        self.prepare_button = self.button(actions, "3  Prepare videos", lambda: self.action("prepare"))
+        actions.grid(row=10, column=0, columnspan=4, sticky="w")
+        self.prepare_button = self.button(actions, "4  Prepare videos", lambda: self.action("prepare"))
         self.prepare_button.pack(side="left", padx=(0, 8))
-        self.start_button = self.button(actions, "4  Start test…", self.start)
+        self.start_button = self.button(actions, "5  Start test…", self.start)
         self.start_button.pack(side="left", padx=(0, 8))
         self.status_button = self.button(actions, "Check status", lambda: self.action("status"))
         self.status_button.pack(side="left", padx=(0, 8))
@@ -214,8 +237,9 @@ class LauncherWindow:
         self.status_text = tk.StringVar(value="Pairing links this workstation to one published assignment. "
                                             "Save separate connections to switch studies.")
         ttk.Label(body, textvariable=self.status_text, wraplength=600, justify="left").grid(
-            row=9, column=0, columnspan=3, sticky="w", pady=(18, 0))
+            row=11, column=0, columnspan=4, sticky="w", pady=(18, 0))
         self.refresh_profiles()
+        self.update_advanced_recovery()
         self.update_controls()
         self.poll_id = root.after(100, self.poll)
 
@@ -225,7 +249,34 @@ class LauncherWindow:
         return button
 
     def refresh_profiles(self):
-        self.connections.configure(values=self.profiles.names())
+        names = self.profiles.names()
+        labels = {}
+        for name in names:
+            labels[name] = self.profile_labels.get(name, self._profile_label(name))
+        self.profile_labels = labels
+        self.study.configure(values=tuple(labels.values()))
+
+    @staticmethod
+    def _profile_label(name):
+        stem, separator, suffix = name.rpartition("-")
+        if not separator:
+            return name
+        return f"{stem.replace('-', ' ').capitalize()} · {suffix}"
+
+    def select_study(self, name):
+        label = self.profile_labels.get(name, name)
+        self.connection.set(label)
+        self.load_connection()
+
+    def select_subject(self, subject):
+        self.subject.set(subject)
+        self.choose_subject()
+
+    def update_advanced_recovery(self):
+        if self.advanced_recovery.get():
+            self.manual_pairing_button.grid()
+        else:
+            self.manual_pairing_button.grid_remove()
 
     def update_controls(self):
         for widget, state in self.controls:
@@ -235,8 +286,10 @@ class LauncherWindow:
             button.configure(state="normal" if selected else "disabled")
         self.start_button.configure(state="normal" if selected and self.model.ready and self.ack.get()
                                     and not self.runtime_problem else "disabled")
+        self.cancel_pairing_button.configure(state="normal" if self.busy and self.pending_pairing is not None
+                                             else "disabled")
 
-    def submit(self, label, operation, callback):
+    def submit(self, label, operation, callback, on_error=None):
         if self.busy:
             return
         self.busy = True
@@ -244,24 +297,31 @@ class LauncherWindow:
         self.update_controls()
         def work():
             try:
-                self.events.put((callback, operation(), None))
+                self.events.put((callback, operation(), None, on_error))
             except (ContractError, ApiError) as error:
-                self.events.put((callback, None, str(error)))
+                self.events.put((callback, None, str(error), on_error))
             except Exception:
                 self.events.put((callback, None, "Operation failed. Check local status before retrying; "
-                                 "no automatic replay was requested."))
+                                 "no automatic replay was requested.", on_error))
         threading.Thread(target=work, daemon=True).start()
 
     def poll(self):
         try:
             try:
-                callback, result, error = self.events.get_nowait()
+                event = self.events.get_nowait()
+                if len(event) == 3:
+                    callback, result, error = event
+                    on_error = None
+                else:
+                    callback, result, error, on_error = event
             except queue.Empty:
                 return
             else:
                 self.busy = False
                 if error:
                     self.status_text.set(error)
+                    if on_error:
+                        on_error()
                 else:
                     callback(result)
         except Exception:
@@ -280,10 +340,12 @@ class LauncherWindow:
         self.subjects.configure(values=())
         self.ack.set(False)
         self.model = None
-        self.context_text.set("Loading the paired assignment…")
+        self.context_text.set("Loading the verified paired assignment…")
         self.trials_text.set("Select a subject after the assignment loads.")
         try:
-            directory = self.profiles.directory(self.connection.get())
+            name = next((name for name, label in self.profile_labels.items() if label == self.connection.get()),
+                        self.connection.get())
+            directory = self.profiles.directory(name)
         except ContractError as error:
             self.status_text.set(str(error))
             self.update_controls()
@@ -292,17 +354,27 @@ class LauncherWindow:
         def loaded(context):
             self.model = model
             self.subjects.configure(values=[row["subject_id"] for row in context["subjects"]])
-            self.context_text.set(f"{context['study_name']}\n{model.pairing['server_origin']}\n"
-                                  f"Published assignment: {context['experiment_id']}")
+            self.profile_labels[name] = study_label(context)
+            self.connection.set(self.profile_labels[name])
+            self.refresh_profiles()
+            self.context_text.set(f"{context['study_name']}\nOrigin: {model.pairing['server_origin']}\n"
+                                  f"Immutable assignment ID: {context['experiment_id']}\n"
+                                  f"Assigned subjects: {len(context['subjects'])}")
             self.status_text.set("Assignment verified. Choose a subject to prepare or inspect.")
-        self.submit("Verifying connection and fetching assigned subjects…", model.load, loaded)
+        def clear_revoked_study():
+            self.connection.set("")
+            self.model = None
+            self.subject.set("")
+            self.subjects.configure(values=())
+        self.submit("Verifying connection and fetching assigned subjects…", model.load, loaded, clear_revoked_study)
 
     def choose_subject(self):
         if self.model and not self.busy:
             self.model.select(self.subject.get())
             self.ack.set(False)
             subject = next(row for row in self.model.context["subjects"] if row["subject_id"] == self.model.subject)
-            self.trials_text.set(f"{subject['trial_count']} assigned trials · Includes assigned repeats and foils")
+            self.trials_text.set(f"Selected subject: {subject['subject_id']} · {subject['trial_count']} assigned trials · "
+                                 "Preparation: not ready")
             self.status_text.set("Prepare videos before starting. Check status to inspect existing results.")
             self.update_controls()
 
@@ -315,6 +387,8 @@ class LauncherWindow:
                                  f"Saved results: {attempt.get('attempt_root', 'inspect local status')}\n"
                                  "Retry upload does not replay videos. Interrupted attempts require review.")
         else:
+            self.trials_text.set(f"Selected subject: {self.model.subject} · {attempt.get('trial_count', 'assigned')} "
+                                 "assigned trials · Preparation: verified")
             self.status_text.set("Videos prepared and hashes verified. A full decode check runs before PGL starts. "
                                  "Confirm the subject and non-participant acknowledgement to start.")
 
@@ -329,10 +403,11 @@ class LauncherWindow:
         if self.busy or not self.model or not self.model.ready or not self.ack.get() or self.runtime_problem:
             return
         context = self.model.context
+        subject = next(row for row in context["subjects"] if row["subject_id"] == self.model.subject)
         confirmed = messagebox.askokcancel("Confirm non-participant test",
             f"Study: {context['study_name']}\nAssignment: {context['experiment_id']}\n"
-            f"Subject: {self.model.subject}\n\nPGL will open its task display. "
-            "The entire assigned integration block will play; day/block labels are 1/1. "
+            f"Subject: {self.model.subject}\nTrials: {subject['trial_count']} assigned trials\n\nPGL will open its task display. "
+            "The entire assigned integration block will play; day 1/block 1 labels apply. "
             "This is not an approved participant schedule. Continue?", parent=self.root)
         if confirmed:
             settings = RunSettings(settings_name=self.settings_name.get().strip() or None,
@@ -343,7 +418,53 @@ class LauncherWindow:
                         "Keep this launcher open; results will save locally before upload.",
                         lambda: model.run(integration_test=True, ffmpeg=ffmpeg, settings=settings), self.show_result)
 
-    def pair(self):
+    def choose_study_in_browser(self):
+        if self.busy:
+            return
+        self.pair_cancel = threading.Event()
+
+        def started(pending):
+            self.pending_pairing = pending
+            self.wait_for_browser_approval()
+
+        self.submit("Opening the website for coordinator authorization…",
+                    lambda: self.browser_pairing.start(self.origin.get(), socket.gethostname(),
+                                                       cancel_event=self.pair_cancel), started,
+                    self.finish_browser_pairing)
+
+    def wait_for_browser_approval(self):
+        pending = self.pending_pairing
+        if pending is None:
+            return
+
+        def published(result):
+            if "profile_name" in result:
+                name = result["profile_name"]
+            else:
+                name = self.profiles.publish(pending.origin, **result)
+            context = result.get("study_context")
+            if context is not None:
+                self.profile_labels[name] = study_label(context)
+            self.finish_browser_pairing()
+            self.refresh_profiles()
+            self.select_study(name)
+
+        self.submit(f"In the browser, choose the published study and compare code {pending.user_code}. "
+                    "Waiting for coordinator authorization…",
+                    lambda: self.browser_pairing.wait(pending, self.pair_cancel,
+                                                      reuse=self.profiles.find_assignment),
+                    published, self.finish_browser_pairing)
+
+    def cancel_browser_pairing(self):
+        if self.pending_pairing is not None and self.pair_cancel is not None:
+            self.status_text.set("Cancelling browser authorization…")
+            self.pair_cancel.set()
+
+    def finish_browser_pairing(self):
+        self.pending_pairing = None
+        self.pair_cancel = None
+
+    def manual_pairing(self):
         from tkinter import messagebox
         if self.busy:
             return
@@ -355,7 +476,7 @@ class LauncherWindow:
         frame.grid(sticky="nsew")
         frame.columnconfigure(1, weight=1)
         self.ttk.Label(frame, wraplength=480, text="In the website, publish the study's integration assignment "
-                       "and choose Pair workstation. Its one-time code identifies the assignment.").grid(
+                       "and use its one-time code only for recovery pairing.").grid(
                            row=0, column=0, columnspan=2, pady=(0, 14))
         variables = {}
         for row, (key, label, value) in enumerate((("name", "Connection name", ""),
@@ -387,6 +508,9 @@ class LauncherWindow:
             self.submit("Pairing with the published assignment…", lambda: self.profiles.connect(
                 name, origin, code, socket.gethostname(), allow_file_token=True), paired)
         self.ttk.Button(frame, text="Pair study", command=connect).grid(row=6, column=1, sticky="e", pady=(16, 0))
+
+    def pair(self):
+        self.manual_pairing()
 
     def close(self):
         from tkinter import messagebox
