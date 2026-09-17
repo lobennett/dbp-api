@@ -77,10 +77,13 @@ from the paired assignment rather than guessed or entered into Python code.
 
 Existing CLI connections appear as **default**. New connections live at
 `~/.config/dbp-pgl/profiles/<name>` and never overwrite existing configurations.
-The CLI can use the same connection explicitly:
+For a browser-selected study, use the selected profile for every CLI inspection,
+recovery, or upload command; do not fall back to the default connection:
 
 ```sh
-dbp-pgl --config-dir ~/.config/dbp-pgl/profiles/hands-pilot status subject-001
+PROFILE=~/.config/dbp-pgl/profiles/<selected-profile>
+dbp-pgl --config-dir "$PROFILE" status subject-001
+dbp-pgl --config-dir "$PROFILE" sync subject-001
 ```
 
 The launcher uses the existing runner, not a second task implementation. PGL
@@ -106,9 +109,15 @@ desktop requirement; normal CLI commands do not import it.
 1. On the **updated** local browser or live website, save a study, publish its
    integration-test assignment, and choose **Pair workstation**.
 2. Pair this computer: `dbp-pgl connect`.
-3. Run one synthetic subject: `dbp-pgl run s001 --integration-test`.
-4. Inspect results: `dbp-pgl status s001`.
-5. Retry synchronization without presenting again: `dbp-pgl sync s001`.
+3. Set the selected browser-created profile before run, status, or sync:
+
+```sh
+PROFILE=~/.config/dbp-pgl/profiles/<selected-profile>
+dbp-pgl --config-dir "$PROFILE" prepare s001
+dbp-pgl --config-dir "$PROFILE" run s001 --integration-test
+dbp-pgl --config-dir "$PROFILE" status s001
+dbp-pgl --config-dir "$PROFILE" sync s001
+```
 
 `run` automatically prepares media, fully checks decoding, reserves an exclusive
 attempt, launches real PGL, saves locally, and tries to synchronize afterward.
@@ -118,7 +127,7 @@ The notebook offers the same sequence. Alternatively:
 python examples/digital_brain_pilot.py run s001 --integration-test
 ```
 
-Preparation can be done ahead of time with `dbp-pgl prepare s001`.
+`dbp-pgl --config-dir "$PROFILE" prepare s001` can be done ahead of time.
 `run --no-sync` retains results locally for later synchronization.
 Use `--settings-name` and `--display-name` for installed PGL profiles;
 `--day`, `--block`, `--description-seconds`, and `--display-width` configure the
@@ -180,9 +189,10 @@ there are deliberately no network requests during presentation.
 - An interrupted attempt is never silently replayed. After a crash:
 
   ```sh
-  dbp-pgl status s001
-  dbp-pgl recover s001 --terminate
-  dbp-pgl sync s001
+  PROFILE=~/.config/dbp-pgl/profiles/<selected-profile>
+  dbp-pgl --config-dir "$PROFILE" status s001
+  dbp-pgl --config-dir "$PROFILE" recover s001 --terminate
+  dbp-pgl --config-dir "$PROFILE" sync s001
   ```
 
   Only if an incomplete final journal fragment is reported, explicitly add
