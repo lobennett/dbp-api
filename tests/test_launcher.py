@@ -7,7 +7,7 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 from types import SimpleNamespace
 
 from dbp_pgl_runner.api import ApiError
@@ -247,6 +247,26 @@ class LauncherWindowTests(unittest.TestCase):
                                                              device_response=device(), study_context=study())
         self.assertNotIn("pgl", sys.modules)
 
+    def test_entered_https_origin_uses_primary_browser_selection(self):
+        origin = "https://coordinator.example"
+        runner = Mock()
+        runner.study.return_value = study()
+        runner.pairing_identity.return_value = {"server_origin": origin,
+                                                "device_id": "d" * 32, "experiment_id": "b" * 32}
+        pairing, pending = self.browser_pairing({"device_response": device(), "study_context": study()})
+        pending.origin = origin
+        self.window.profiles.publish = Mock(return_value="practice-study-bbbbbbbb")
+        self.window.profiles.names = Mock(return_value=["practice-study-bbbbbbbb"])
+        self.window.origins.delete(0, "end")
+        self.window.origins.insert(0, origin)
+        self.assertEqual(self.window.origin.get(), origin)
+        with patch("dbp_pgl_runner.launcher.StudyRunner", return_value=runner):
+            self.window.choose_study_button.invoke()
+            self.wait()
+        pairing.start.assert_called_once_with(origin, ANY, cancel_event=ANY)
+        self.window.profiles.publish.assert_called_once_with(origin,
+                                                             device_response=device(), study_context=study())
+
     def test_start_names_exact_study_subject_and_trial_count(self):
         runner = Mock()
         runner.study.return_value = study()
@@ -355,6 +375,13 @@ class LauncherWindowTests(unittest.TestCase):
         self.window.advanced_recovery.set(True)
         self.window.update_advanced_recovery()
         self.assertEqual(self.window.manual_pairing_button.winfo_manager(), "grid")
+
+    def test_submit_joins_worker_before_tk_teardown(self):
+        completed = threading.Event()
+        self.window.submit("Checking", lambda: {}, lambda result: completed.set())
+        self.wait()
+        self.assertTrue(completed.is_set())
+        self.assertEqual(self.window.workers, set())
 
     def test_real_widgets_select_prepare_confirm_and_retry_upload(self):
         runner = Mock()

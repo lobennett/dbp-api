@@ -154,6 +154,7 @@ class LauncherWindow:
         self.runtime_problem = runtime_problem()
         self.busy = False
         self.events = queue.Queue()
+        self.workers = set()
         self.controls = []
         root.title("Digital Brain · Pilot launcher")
         root.minsize(660, 620)
@@ -169,10 +170,10 @@ class LauncherWindow:
             row=1, column=0, columnspan=3, sticky="w", pady=(4, 20))
         ttk.Label(body, text="1  Website").grid(row=2, column=0, sticky="w", padx=(0, 14))
         self.origin = tk.StringVar(value="http://127.0.0.1:8769")
-        self.origins = ttk.Combobox(body, textvariable=self.origin, state="readonly",
+        self.origins = ttk.Combobox(body, textvariable=self.origin, state="normal",
                                     values=("http://127.0.0.1:8769", "http://localhost:8769"))
         self.origins.grid(row=2, column=1, sticky="ew")
-        self.controls.append((self.origins, "readonly"))
+        self.controls.append((self.origins, "normal"))
         self.choose_study_button = self.button(body, "Choose study in browser", self.choose_study_in_browser)
         self.choose_study_button.grid(row=2, column=2, padx=(10, 0))
         self.cancel_pairing_button = ttk.Button(body, text="Cancel", command=self.cancel_browser_pairing,
@@ -303,7 +304,9 @@ class LauncherWindow:
             except Exception:
                 self.events.put((callback, None, "Operation failed. Check local status before retrying; "
                                  "no automatic replay was requested.", on_error))
-        threading.Thread(target=work, daemon=True).start()
+        worker = threading.Thread(target=work, daemon=True)
+        self.workers.add(worker)
+        worker.start()
 
     def poll(self):
         try:
@@ -317,6 +320,9 @@ class LauncherWindow:
             except queue.Empty:
                 return
             else:
+                for worker in self.workers:
+                    worker.join()
+                self.workers.clear()
                 self.busy = False
                 if error:
                     self.status_text.set(error)
