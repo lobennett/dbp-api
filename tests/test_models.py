@@ -6,10 +6,28 @@ import sys
 import unittest
 
 from dbp_pgl_runner.models import BlockPackage, ContractError, canonical_bytes, canonical_subject
+from dbp_pgl_runner.compatibility import expected_compatibility
 from tests.fixtures import block, seal
 
 
 class ModelTests(unittest.TestCase):
+    def test_block_requires_exact_compatibility(self):
+        self.assertEqual(BlockPackage.from_dict(block()).compatibility,
+                         expected_compatibility())
+        for mutation in ("missing", "additional", "mismatch", "malformed"):
+            with self.subTest(mutation=mutation):
+                source = block()
+                if mutation == "missing":
+                    del source["compatibility"]
+                elif mutation == "additional":
+                    source["compatibility"]["extra"] = True
+                elif mutation == "mismatch":
+                    source["compatibility"]["runner_version"] = "9.9.9"
+                else:
+                    source["compatibility"] = []
+                with self.assertRaises(ContractError):
+                    BlockPackage.from_dict(seal(source))
+
     def test_foil_can_have_distinct_bytes_from_its_parent(self):
         source = block()
         foil = dict(source["trials"][0], trial_index=2, role="foil", condition="new-integration-foil",

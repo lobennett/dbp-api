@@ -2,6 +2,7 @@ import json
 import unittest
 
 from dbp_pgl_runner.api import ApiError, RangeNotSupported, RunnerApi
+from dbp_pgl_runner.compatibility import expected_compatibility
 from dbp_pgl_runner.config import RunnerConfig
 from dbp_pgl_runner.models import BlockPackage, ContractError
 from tests.fixtures import MEDIA, TOKEN, block, device, seal
@@ -17,6 +18,33 @@ def json_response(value, status=200):
 
 
 class ApiTests(unittest.TestCase):
+    def test_study_requires_exact_compatibility(self):
+        response = {
+            "schema_version": "dbp-pgl-study-v1",
+            "experiment_id": "b" * 32,
+            "study_id": "a" * 32,
+            "study_name": "Integration study",
+            "mode": "integration_test",
+            "pgl_ready": False,
+            "compatibility": expected_compatibility(),
+            "subjects": [{"subject_id": "subject-001", "trial_count": 2}],
+        }
+        with server(lambda *args: json_response(response)) as (origin, requests):
+            self.assertEqual(RunnerApi(config(origin), TOKEN).study(), response)
+            self.assertEqual(requests[0][1], "/api/runner-device/study")
+        for mutation in ("missing", "additional", "mismatch"):
+            bad = json.loads(json.dumps(response))
+            if mutation == "missing":
+                del bad["compatibility"]
+            elif mutation == "additional":
+                bad["compatibility"]["extra"] = True
+            else:
+                bad["compatibility"]["pgl_integration_revision"] = "wrong"
+            with self.subTest(mutation=mutation), server(
+                    lambda *args, payload=bad: json_response(payload)) as (origin, requests):
+                with self.assertRaises(ContractError):
+                    RunnerApi(config(origin), TOKEN).study()
+
     def test_attempt_endpoints_are_bound_and_uploads_are_bounded(self):
         attempt_id = "e" * 32
         package = BlockPackage.from_dict(block())

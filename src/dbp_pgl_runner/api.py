@@ -10,6 +10,7 @@ from urllib.parse import quote
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from .config import validate_origin, validate_token
+from .compatibility import validate_compatibility
 from .models import (BlockPackage, ContractError, MAX_JSON_BYTES, canonical_subject,
                      canonical_bytes, identity, is_finite_number, normalized, strict_json)
 
@@ -96,6 +97,30 @@ class RunnerApi:
         if (result["device_id"] != self.config.device_id
                 or result["experiment_id"] != self.config.experiment_id):
             raise ContractError("Device response does not match configured identity")
+        return result
+
+    def study(self):
+        result = _json(self.config.server_origin, "/api/runner-device/study", self._token)
+        fields = {"schema_version", "experiment_id", "study_id", "study_name",
+                  "mode", "pgl_ready", "compatibility", "subjects"}
+        if type(result) is not dict or set(result) != fields:
+            raise ContractError("Invalid study context fields")
+        if (result["schema_version"] != "dbp-pgl-study-v1"
+                or result["mode"] != "integration_test" or result["pgl_ready"] is not False
+                or identity(result["experiment_id"]) != self.config.experiment_id):
+            raise ContractError("Study context does not match configured experiment")
+        identity(result["study_id"])
+        normalized(result["study_name"], 120)
+        result["compatibility"] = validate_compatibility(result["compatibility"])
+        subjects = result["subjects"]
+        if type(subjects) is not list or not 1 <= len(subjects) <= 100:
+            raise ContractError("Invalid study subject roster")
+        for subject in subjects:
+            if (type(subject) is not dict or set(subject) != {"subject_id", "trial_count"}
+                    or canonical_subject(subject["subject_id"]) != subject["subject_id"]
+                    or type(subject["trial_count"]) is not int
+                    or not 1 <= subject["trial_count"] <= 50_000):
+                raise ContractError("Invalid study subject roster")
         return result
 
     def next_block(self, subject_alias):

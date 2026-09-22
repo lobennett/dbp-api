@@ -1,6 +1,8 @@
 import hashlib
 import json
 
+from dbp_pgl_runner.compatibility import expected_compatibility
+
 
 MEDIA = b"integration-video-bytes"
 TOKEN = "test-device-secret"
@@ -18,7 +20,8 @@ def seal(value, field="package_sha256"):
 def block():
     return seal({
         "schema_version": "dbp-pgl-block-v1", "mode": "integration_test",
-        "pgl_ready": False, "package_id": "a" * 32,
+        "pgl_ready": False, "compatibility": expected_compatibility(),
+        "package_id": "a" * 32,
         "experiment_id": "b" * 32, "subject_id": "subject-001",
         "block_id": "c" * 32,
         "trials": [{

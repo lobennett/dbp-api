@@ -8,6 +8,7 @@ import sys
 from types import SimpleNamespace
 
 from .config import private_directory
+from .compatibility import PGL_INTEGRATION_REVISION
 from .models import ContractError, canonical_subject, identity
 
 
@@ -51,6 +52,11 @@ class PglAdapter:
             except (ImportError, OSError, SyntaxError):
                 raise ContractError("Install the pinned experiment extra and PGL native prerequisites first") from None
             self.module = pgl
+        if getattr(self.module, "DBP_INTEGRATION_REVISION", None) != PGL_INTEGRATION_REVISION:
+            raise ContractError(
+                "Study requires a different DBP runner or PGL build; "
+                "install the exact published versions"
+            )
         try:
             parameters = inspect.signature(self.module.pglDigitalBrainConfigure).parameters
         except (AttributeError, TypeError, ValueError):

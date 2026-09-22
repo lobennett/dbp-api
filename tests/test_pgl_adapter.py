@@ -58,7 +58,8 @@ def module():
         experiment.callback = event_callback
         experiment.movie_path = moviePath
         return experiment
-    return SimpleNamespace(pgl=lambda: SimpleNamespace(close=lambda: None),
+    return SimpleNamespace(DBP_INTEGRATION_REVISION="dbp-prepared-block-v2",
+                           pgl=lambda: SimpleNamespace(close=lambda: None),
                            pglExperiment=FakeExperiment, pglDigitalBrainConfigure=configure)
 
 
@@ -113,3 +114,9 @@ class AdapterTests(unittest.TestCase):
         for kwargs in ({"description_seconds": -1}, {"display_width": 0}, {"day": True}):
             with self.subTest(kwargs=kwargs), self.assertRaises(ContractError):
                 RunSettings(**kwargs)
+
+    def test_preflight_rejects_wrong_pgl_integration_revision(self):
+        installed = module()
+        installed.DBP_INTEGRATION_REVISION = "wrong-revision"
+        with self.assertRaisesRegex(ContractError, "exact published versions"):
+            PglAdapter(module=installed).preflight()
