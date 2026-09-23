@@ -12,6 +12,7 @@ from .journal import Journal
 from .models import BlockPackage, ContractError, MAX_JSON_BYTES, canonical_bytes, identity, seal_document, strict_json, verify_document
 from .pgl_adapter import PglAdapter, RunSettings
 from .prepare import PreparedBlock, _lock, _subject_root, status_subject
+from .presentation import prepare_presentation
 
 
 def _attempts(prepared, *, create=False):
@@ -120,11 +121,17 @@ def run_subject(api, config, subject, work_root, *, integration_test=False, sett
             else:
                 raise ContractError("Attempt already ran; use sync. Re-exposure requires a new reviewed study assignment")
         adapter.preflight()
-        decode = verify_decode(prepared, ffmpeg=ffmpeg)
+        presentation = prepare_presentation(prepared, ffmpeg=ffmpeg)
+        decode = verify_decode(presentation, ffmpeg=ffmpeg)
         verified = status_subject(config, subject, work_root)
         if verified.root != prepared.root or verified.package.package_sha256 != prepared.package.package_sha256:
             raise ContractError("Prepared block changed during decoding; no experiment started")
         prepared = verified
+        verified_presentation = prepare_presentation(prepared, ffmpeg=ffmpeg)
+        if (verified_presentation.root != presentation.root
+                or verified_presentation.receipt != presentation.receipt):
+            raise ContractError("Presentation media changed during decoding; no experiment started")
+        presentation = verified_presentation
         journal = reuse or Journal(parent, secrets.token_hex(16), len(prepared.package.trials))
         if reuse is None:
             metadata = seal_document({"schema_version": "dbp-pgl-attempt-v1", "attempt_id": journal.attempt_id,
@@ -135,6 +142,7 @@ def run_subject(api, config, subject, work_root, *, integration_test=False, sett
                                      "settings": asdict(settings), "created_at": time.time()}, "attempt_sha256")
             atomic_write(journal.root / "attempt.json", canonical_bytes(metadata))
             atomic_write(journal.root / "input-block.json", canonical_bytes(prepared.package.to_dict()))
+            atomic_write(journal.root / "presentation.json", canonical_bytes(presentation.receipt))
             atomic_write(parent / "current.json", canonical_bytes({"attempt_id": journal.attempt_id,
                                                                       "package_sha256": prepared.package.package_sha256}))
         else:
@@ -160,7 +168,7 @@ def run_subject(api, config, subject, work_root, *, integration_test=False, sett
             journal.append(kind, trial_index, data)
 
         try:
-            result = adapter.run(prepared.root, journal.root / "native", prepared.package.subject_id,
+            result = adapter.run(presentation.root, journal.root / "native", prepared.package.subject_id,
                                  journal.attempt_id, callback, settings)
             native_saved = result.native_saved and _native_complete(journal.root / "native")
             complete = (native_saved and result.error is None

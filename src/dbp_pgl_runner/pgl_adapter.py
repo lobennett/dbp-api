@@ -12,6 +12,17 @@ from .compatibility import PGL_INTEGRATION_REVISION
 from .models import ContractError, canonical_subject, identity
 
 
+def native_renderer_problem(package_file):
+    if not package_file:
+        return None
+    package_root = Path(package_file).resolve().parent.parent
+    renderer = package_root / "metal" / "mglMetal.app" / "Contents" / "MacOS" / "mglMetal"
+    command_types = package_root / "metal" / "mglCommandTypes.h"
+    if renderer.is_file() and command_types.is_file():
+        return None
+    return "PGL's native renderer is missing. Reinstall the pinned PGL package before starting a test."
+
+
 @dataclass(frozen=True)
 class RunSettings:
     day: int = 1
@@ -57,6 +68,9 @@ class PglAdapter:
                 "Study requires a different DBP runner or PGL build; "
                 "install the exact published versions"
             )
+        renderer_problem = native_renderer_problem(getattr(self.module, "__file__", None))
+        if renderer_problem:
+            raise ContractError(renderer_problem)
         try:
             parameters = inspect.signature(self.module.pglDigitalBrainConfigure).parameters
         except (AttributeError, TypeError, ValueError):
@@ -84,6 +98,7 @@ class PglAdapter:
     def run(self, prepared_root, output_root, subject, attempt_id, callback, settings):
         self.preflight()
         subject = canonical_subject(subject)
+        pgl_subject = f"s{int(subject[-3:]):04d}"
         identity(attempt_id)
         output_root = private_directory(output_root)
         engine = self.engine
@@ -102,7 +117,7 @@ class PglAdapter:
                 if inner.save_attempted:
                     return
                 inner.save_attempted = True
-                expected = (output_root / inner.experimentSettings.experimentSaveName / subject
+                expected = (output_root / inner.experimentSettings.experimentSaveName / pgl_subject
                             / inner.experimentSettings.sessionName / inner.experimentSettings.runName)
                 if not expected.resolve().is_relative_to(output_root) or expected.exists():
                     raise ContractError("Native result destination is not a fresh private path")
@@ -126,7 +141,7 @@ class PglAdapter:
         try:
             if engine is None:
                 engine = self.module.pgl()
-            kwargs = {"subjectID": subject, "experimentName": "DBP integration pilot",
+            kwargs = {"subjectID": pgl_subject, "experimentName": "DBP integration pilot",
                       "sessionName": f"day{settings.day}", "runName": attempt_id}
             if settings.settings_name is not None:
                 kwargs["settingsName"] = settings.settings_name
