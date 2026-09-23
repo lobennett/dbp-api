@@ -29,6 +29,13 @@ For preparation/synchronization without native PGL: `pip install -e .`.
 Upstream PGL currently uses Python 3.12 syntax despite a less restrictive
 package declaration; do not install the experiment extra into Python 3.11.
 
+Runner `0.3.0` requires the exact compatibility object published by the matching
+website release: contract `dbp-pgl-integration-v2`, PGL commit
+`128874a1940da7c75e4db554fdff28602d4f3985`, and PGL integration revision
+`dbp-prepared-block-v2`. A mismatch stops before media download; an installed
+PGL revision mismatch stops before display hardware opens. Republish studies
+created by older website releases rather than modifying their sealed packages.
+
 For Jupyter, install/register the environment once, then select its kernel:
 
 ```sh
