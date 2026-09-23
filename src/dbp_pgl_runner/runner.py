@@ -9,6 +9,11 @@ from .models import ContractError
 from .workflow import attempt_status, recover_subject, run_subject, sync_subject
 
 
+def study_label(context):
+    """Return the coordinator-facing label for a verified study assignment."""
+    return f"{context['study_name']} · {context['experiment_id'][:8]}"
+
+
 class StudyRunner:
     def __init__(self, *, config_dir=None, cache_root=None, work_root=None):
         self.config_dir = Path(config_dir or Path.home() / ".config/dbp-pgl")
@@ -27,6 +32,15 @@ class StudyRunner:
     def _connection(self):
         config = RunnerConfig.load(self.config_dir)
         return config, RunnerApi(config, config.read_token(self.config_dir))
+
+    def study(self):
+        _, api = self._connection()
+        return api.study()
+
+    def pairing_identity(self):
+        config = RunnerConfig.load(self.config_dir)
+        return {"server_origin": config.server_origin, "device_id": config.device_id,
+                "experiment_id": config.experiment_id}
 
     def prepare(self, subject):
         config, api = self._connection()

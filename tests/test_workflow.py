@@ -5,8 +5,9 @@ import shutil
 import unittest
 from unittest.mock import patch
 
-from dbp_pgl_runner.models import ContractError
+from dbp_pgl_runner.models import ContractError, canonical_bytes, seal_document
 from dbp_pgl_runner.prepare import prepare_subject
+from dbp_pgl_runner.presentation import PresentationBlock
 from dbp_pgl_runner.workflow import run_subject, sync_subject, recover_subject
 from tests.test_prepare import MediaApi
 from tests.test_api import config
@@ -42,12 +43,14 @@ class ExecutionApi(MediaApi):
 class Adapter:
     runs = 0
     interrupt = False
+    prepared_roots = []
 
     def preflight(self):
         pass
 
     def run(self, prepared_root, output_root, subject, attempt_id, callback, settings):
         self.runs += 1
+        self.prepared_roots.append(prepared_root)
         output_root.mkdir(mode=0o700)
         for directory, names in ((output_root, ("experimentSettings.json", "pgl.json", "settings.json", "state.json", "data.json")),
                                  (output_root / "task", ("settings.json", "state.json", "data.json"))):
@@ -74,8 +77,16 @@ class WorkflowTests(unittest.TestCase):
         self.work = self.root / "work"
         prepare_subject(self.api, self.config, "s001", self.root / "cache", self.work)
         self.adapter = Adapter()
+        self.adapter.prepared_roots = []
+        receipt = seal_document({"profile": "test-h264"}, "receipt_sha256")
+        self.presentation = patch(
+            "dbp_pgl_runner.workflow.prepare_presentation",
+            side_effect=lambda prepared, **kwargs: PresentationBlock(prepared.root, prepared.package, receipt),
+        )
+        self.presentation.start()
+        self.addCleanup(self.presentation.stop)
         self.decoder = patch("dbp_pgl_runner.workflow.verify_decode", return_value={"full_decode": True})
-        self.decoder.start()
+        self.decode = self.decoder.start()
         self.addCleanup(self.decoder.stop)
 
     def run_subject(self, **kwargs):
@@ -85,6 +96,34 @@ class WorkflowTests(unittest.TestCase):
     def test_run_requires_explicit_integration_acknowledgement(self):
         with self.assertRaises(ContractError):
             run_subject(self.api, self.config, "s001", self.work, adapter=self.adapter)
+        self.assertEqual(self.api.claims, [])
+        self.assertEqual(self.adapter.runs, 0)
+
+    def test_run_uses_verified_presentation_derivative_and_records_receipt(self):
+        from dbp_pgl_runner.prepare import status_subject
+        prepared = status_subject(self.config, "s001", self.work)
+        presentation_root = prepared.root.parent / "presentations" / "test-h264"
+        presentation_root.mkdir(mode=0o700, parents=True)
+        receipt = seal_document({"profile": "test-h264"}, "receipt_sha256")
+        presentation = PresentationBlock(presentation_root, prepared.package, receipt)
+
+        with patch("dbp_pgl_runner.workflow.prepare_presentation", create=True,
+                   return_value=presentation) as convert:
+            result = self.run_subject()
+
+        self.assertEqual(convert.call_count, 2)
+        self.assertEqual(self.decode.call_args.args[0].root, presentation_root)
+        self.assertEqual(self.adapter.prepared_roots, [presentation_root])
+        self.assertEqual(
+            (Path(result["attempt_root"]) / "presentation.json").read_bytes(),
+            canonical_bytes(receipt),
+        )
+
+    def test_presentation_failure_happens_before_attempt_claim(self):
+        with patch("dbp_pgl_runner.workflow.prepare_presentation", create=True,
+                   side_effect=ContractError("conversion failed")):
+            with self.assertRaisesRegex(ContractError, "conversion failed"):
+                self.run_subject()
         self.assertEqual(self.api.claims, [])
         self.assertEqual(self.adapter.runs, 0)
 

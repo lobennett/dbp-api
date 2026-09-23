@@ -7,6 +7,8 @@ import math
 from pathlib import PurePosixPath
 import re
 
+from .compatibility import validate_compatibility
+
 
 MAX_MEDIA_BYTES = 32 * 1024 * 1024
 MAX_BLOCK_MEDIA_BYTES = 2 * 1024 * 1024 * 1024
@@ -112,6 +114,7 @@ class BlockPackage:
     schema_version: str
     mode: str
     pgl_ready: bool
+    compatibility: dict
     package_id: str
     experiment_id: str
     subject_id: str
@@ -128,6 +131,7 @@ class BlockPackage:
             raise ContractError("Only integration packages with pgl_ready false are accepted")
         if document["schema_version"] != "dbp-pgl-block-v1":
             raise ContractError("Unsupported block schema")
+        document["compatibility"] = validate_compatibility(document["compatibility"])
         identities = [identity(document[field]) for field in
                       ("package_id", "experiment_id", "block_id")]
         if len(set(identities)) != 3:

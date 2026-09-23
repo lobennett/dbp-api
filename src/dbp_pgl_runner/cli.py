@@ -28,6 +28,7 @@ def _parser():
     parser.add_argument("--cache-root", type=Path, default=Path.home() / ".local/share/dbp-pgl/cache")
     parser.add_argument("--work-root", type=Path, default=Path.home() / ".local/share/dbp-pgl/work")
     commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("launch", help="Open the local coordinator window; no task starts automatically")
     connect = commands.add_parser("connect", help="Pair using a hidden one-time code prompt")
     connect.add_argument("--server", help="HTTPS origin (prompted if omitted)")
     connect.add_argument("--device-name", default=socket.gethostname())
@@ -68,6 +69,9 @@ def main(argv=None):
         print("Use --integration-test to acknowledge a non-participant pilot; pgl_ready=false.", file=sys.stderr)
         return 2
     try:
+        if args.command == "launch":
+            from .launcher import launch
+            return launch(config_dir=args.config_dir, cache_root=args.cache_root, work_root=args.work_root)
         if args.command == "connect":
             origin = validate_origin(args.server or input("Server origin (HTTPS or local loopback): "))
             if not args.allow_file_token:

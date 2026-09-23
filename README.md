@@ -29,6 +29,13 @@ For preparation/synchronization without native PGL: `pip install -e .`.
 Upstream PGL currently uses Python 3.12 syntax despite a less restrictive
 package declaration; do not install the experiment extra into Python 3.11.
 
+Runner `0.3.0` requires the exact compatibility object published by the matching
+website release: contract `dbp-pgl-integration-v2`, PGL commit
+`128874a1940da7c75e4db554fdff28602d4f3985`, and PGL integration revision
+`dbp-prepared-block-v2`. A mismatch stops before media download; an installed
+PGL revision mismatch stops before display hardware opens. Republish studies
+created by older website releases rather than modifying their sealed packages.
+
 For Jupyter, install/register the environment once, then select its kernel:
 
 ```sh
@@ -38,27 +45,123 @@ For Jupyter, install/register the environment once, then select its kernel:
 
 ## Website → pilot → saved results
 
-1. On the **updated** local browser or live website, save a study, publish its
-   integration-test assignment, and choose **Pair workstation**.
-2. Pair this computer: `dbp-pgl connect`.
-3. Run one synthetic subject: `dbp-pgl run s001 --integration-test`.
-4. Inspect results: `dbp-pgl status s001`.
-5. Retry synchronization without presenting again: `dbp-pgl sync s001`.
+### Coordinator launcher (recommended)
+
+Open `dbp-pgl launch`, or double-click `launch-pilot.command` in a source
+checkout on a Mac. The latter finds a local Python 3.12+ with Tk; set
+`DBP_PGL_PYTHON` to use a specific installed interpreter. It does not install
+anything, start a web server, or start PGL automatically. PGL and FFmpeg must be
+installed in that interpreter/environment before actual presentation.
+
+1. Start an updated local website, enter its literal loopback URL (or an HTTPS
+   URL) in the launcher, and choose **Choose study in browser**.
+2. Sign in in the browser if needed. Compare the displayed code with the
+   launcher's code, select one of your published integration assignments, and
+   approve it. The launcher polls, exchanges once, verifies the device and study,
+   then creates a private, study-derived saved connection; it never receives the
+   browser password or session.
+3. Select that verified connection. Check its study name, origin, immutable
+   assignment ID, and roster, then choose `subject-001` from the assigned-subject
+   dropdown.
+4. Choose **Prepare videos**, inspect the package/manifest and runtime checks,
+   acknowledge non-participant use, then choose **Start test**. The final
+   confirmation names the exact assignment and subject. Preparation verifies
+   media hashes; starting also fully decodes videos before presentation.
+5. Inspect the saved-results path and upload state. **Retry upload** never
+   replays the videos. An existing attempt prevents starting again; interruptions
+   require the explicit recovery/review workflow below.
+6. If browser authorization is unavailable, reveal **Manual pairing…** and use
+   the website's one-time code with explicit private-file-storage consent. It is
+   recovery-only, not the normal study-selection workflow. Revoke a lost or
+   retired workstation from the website before discarding its local profile.
+
+The pairing code, not the subject ID, identifies the study. Each device
+credential is restricted to one immutable published assignment. The launcher
+supports several saved connections without broadening any credential's access:
+select a different connection to switch studies. Publishing a revised assignment
+requires a new pairing; it does not retarget an existing one. Subjects are fetched
+from the paired assignment rather than guessed or entered into Python code.
+
+Existing CLI connections appear as **default**. New connections live at
+`~/.config/dbp-pgl/profiles/<name>` and never overwrite existing configurations.
+For a browser-selected study, use the selected profile for every CLI inspection,
+recovery, or upload command; do not fall back to the default connection:
+
+```sh
+PROFILE=~/.config/dbp-pgl/profiles/<selected-profile>
+dbp-pgl --config-dir "$PROFILE" status subject-001
+dbp-pgl --config-dir "$PROFILE" sync subject-001
+```
+
+The launcher uses the existing runner, not a second task implementation. PGL
+runs on the main thread of a separate Python process while the launcher remains
+responsive. It uses the entire integration block, labelled day 1/block 1, with
+the existing 12-second description and 50-degree width defaults. These are not
+approved participant session settings. The workstation profile fields select
+installed PGL lab settings; scientific scheduling remains a separate validation.
+The launcher disables Start when its Python cannot find PGL or is not a supported
+macOS/Python version. Preparation and result inspection remain available.
+At launch, a private temporary credential/configuration snapshot binds the child
+to the confirmed connection even if the original profile changes; it is removed
+when the child exits. Native console output is drained into a bounded memory
+buffer rather than an unbounded log on the results disk.
+
+Use the updated local website until the live server includes
+`GET /api/runner-device/study` and the other runner endpoints. Starting only the
+launcher does not make an older website compatible. Tk is an optional local
+desktop requirement; normal CLI commands do not import it.
+
+### Command line / notebook
+
+#### Browser-selected named profile
+
+1. Complete Coordinator launcher steps 1–3 above: choose **Choose study in
+   browser**, approve the published integration-test assignment, and select its
+   saved connection. Browser pairing creates the selected named profile; do not
+   run manual `dbp-pgl connect` for this workflow.
+2. Set that selected profile before every CLI or script entry point:
+
+```sh
+PROFILE=~/.config/dbp-pgl/profiles/<selected-profile>
+dbp-pgl --config-dir "$PROFILE" prepare s001
+dbp-pgl --config-dir "$PROFILE" run s001 --integration-test
+dbp-pgl --config-dir "$PROFILE" status s001
+dbp-pgl --config-dir "$PROFILE" sync s001
+```
 
 `run` automatically prepares media, fully checks decoding, reserves an exclusive
 attempt, launches real PGL, saves locally, and tries to synchronize afterward.
-The notebook offers the same sequence. Alternatively:
+The notebook offers the same sequence. The pilot script uses the selected profile
+only when `--config-dir` is passed before its command:
 
 ```sh
-python examples/digital_brain_pilot.py run s001 --integration-test
+python examples/digital_brain_pilot.py --config-dir "$PROFILE" prepare s001
+python examples/digital_brain_pilot.py --config-dir "$PROFILE" run s001 --integration-test
+python examples/digital_brain_pilot.py --config-dir "$PROFILE" status s001
+python examples/digital_brain_pilot.py --config-dir "$PROFILE" sync s001
 ```
 
-Preparation can be done ahead of time with `dbp-pgl prepare s001`.
+`dbp-pgl --config-dir "$PROFILE" prepare s001` can be done ahead of time.
 `run --no-sync` retains results locally for later synchronization.
 Use `--settings-name` and `--display-name` for installed PGL profiles;
 `--day`, `--block`, `--description-seconds`, and `--display-width` configure the
 integration pilot. Defaults match the notebook's 12-second description and
 50-degree width; lab calibration determines whether they are appropriate.
+
+#### Manual/default CLI recovery fallback
+
+Use this path only when browser authorization is unavailable. Manual
+`dbp-pgl connect` pairs with the website's one-time code into the default
+`~/.config/dbp-pgl` connection; it is a different workflow from a browser-created
+named profile. Keep every following command on that same default connection:
+
+```sh
+dbp-pgl connect
+dbp-pgl prepare s001
+dbp-pgl run s001 --integration-test
+dbp-pgl status s001
+dbp-pgl sync s001
+```
 
 **The live website must run the corresponding server integration.** Updating this
 package does not update the website. Use a current local instance until the live
@@ -115,9 +218,10 @@ there are deliberately no network requests during presentation.
 - An interrupted attempt is never silently replayed. After a crash:
 
   ```sh
-  dbp-pgl status s001
-  dbp-pgl recover s001 --terminate
-  dbp-pgl sync s001
+  PROFILE=~/.config/dbp-pgl/profiles/<selected-profile>
+  dbp-pgl --config-dir "$PROFILE" status s001
+  dbp-pgl --config-dir "$PROFILE" recover s001 --terminate
+  dbp-pgl --config-dir "$PROFILE" sync s001
   ```
 
   Only if an incomplete final journal fragment is reported, explicitly add
@@ -186,14 +290,24 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 Tests cover execution, interrupts, duplicate synchronization, altered artifacts,
 unsafe paths, credentials, notebook syntax and native adapter cleanup with
 headless test doubles. In the sibling website checkout, the real HTTP test covers
-pairing → preparation → reservation → journal → native-shaped test outputs → upload
-→ idempotent finalization → offline inspection:
+browser authorization → authenticated assignment approval → one-time
+exchange/profile publication → subject selection → preparation → reservation →
+journal → clearly synthetic native-shaped test outputs → upload → idempotent
+finalization → offline inspection:
 
 ```sh
-PYTHONPATH=.:tests .venv/bin/python -m unittest tests.test_study_runner_integration.WrapperIntegrationTests -v
+DBP_PGL_RUNNER_SOURCE=/absolute/path/to/dbp-pgl-runner/src \\
+  PYTHONPATH=.:tests .venv/bin/python -m unittest tests.test_study_runner_integration.WrapperIntegrationTests -v
 ```
 
 This verifies software integration, not actual display/input/eye-tracker behavior.
+For an opt-in local test of the actual Tk controls with a mocked presentation
+process (no task display or participant data):
+
+```sh
+DBP_TEST_GUI=1 PYTHONPATH=src python3.12 -m unittest tests.test_launcher -v
+```
+
 Before participants, Justin/the study team must confirm conditions, foil/repeat
 timing, interruptions and subject/day/block mapping, then run a non-participant
 lab test and inspect native outputs.
