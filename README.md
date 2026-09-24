@@ -1,313 +1,138 @@
-# Digital Brain PGL runner
+# DBP API
 
-Fetch a saved study from the Digital Brain browser, prepare its exact videos,
-run Justin's Digital Brain PGL task, save native results and a durable trial
-journal, and synchronize results back to the website. Use the same workflow from
-the command line or [the pilot notebook](examples/digital_brain_pilot.ipynb).
-
-**Non-participant integration pilot.** The software can execute PGL, but this is
-not certification of the scientific protocol, timing, display, response device,
-or eye tracker. Packages remain `pgl_ready: false`. Hardware validation and study
-approval are separate from the automated tests. No paid hosting is needed.
+A platform-independent Python SDK for querying videos, creating experiments, and
+downloading assigned trials. Python 3.11+; no runtime dependencies, PGL, or launcher.
 
 ## Install
 
-Use **Python 3.12+ on macOS for PGL execution**. Preparation, journals and sync
-also work on POSIX with Python 3.11+. The wrapper uses the standard library.
-
 ```sh
-python3.12 -m venv .venv
-.venv/bin/python -m pip install -e '.[experiment]'
-source .venv/bin/activate
+python -m pip install "git+https://github.com/lobennett/dbp-api.git"
 ```
 
-The experiment extra pins the PGL fork to an exact commit in `pyproject.toml`.
-PGL requires its native macOS build prerequisites and lab configuration.
-FFmpeg must be installed locally for the full video-decode check. Pass
-`--ffmpeg /absolute/path/to/ffmpeg` if it is not on `PATH`.
-For preparation/synchronization without native PGL: `pip install -e .`.
-Upstream PGL currently uses Python 3.12 syntax despite a less restrictive
-package declaration; do not install the experiment extra into Python 3.11.
-
-Runner `0.3.0` requires the exact compatibility object published by the matching
-website release: contract `dbp-pgl-integration-v2`, PGL commit
-`128874a1940da7c75e4db554fdff28602d4f3985`, and PGL integration revision
-`dbp-prepared-block-v2`. A mismatch stops before media download; an installed
-PGL revision mismatch stops before display hardware opens. Republish studies
-created by older website releases rather than modifying their sealed packages.
-
-For Jupyter, install/register the environment once, then select its kernel:
-
-```sh
-.venv/bin/python -m pip install ipykernel
-.venv/bin/python -m ipykernel install --user --name dbp-pgl --display-name 'Python 3.12 (DBP PGL)'
-```
-
-## Website → pilot → saved results
-
-### Coordinator launcher (recommended)
-
-Open `dbp-pgl launch`, or double-click `launch-pilot.command` in a source
-checkout on a Mac. The latter finds a local Python 3.12+ with Tk; set
-`DBP_PGL_PYTHON` to use a specific installed interpreter. It does not install
-anything, start a web server, or start PGL automatically. PGL and FFmpeg must be
-installed in that interpreter/environment before actual presentation.
-
-1. Start an updated local website, enter its literal loopback URL (or an HTTPS
-   URL) in the launcher, and choose **Choose study in browser**.
-2. Sign in in the browser if needed. Compare the displayed code with the
-   launcher's code, select one of your published integration assignments, and
-   approve it. The launcher polls, exchanges once, verifies the device and study,
-   then creates a private, study-derived saved connection; it never receives the
-   browser password or session.
-3. Select that verified connection. Check its study name, origin, immutable
-   assignment ID, and roster, then choose `subject-001` from the assigned-subject
-   dropdown.
-4. Choose **Prepare videos**, inspect the package/manifest and runtime checks,
-   acknowledge non-participant use, then choose **Start test**. The final
-   confirmation names the exact assignment and subject. Preparation verifies
-   media hashes; starting also fully decodes videos before presentation.
-5. Inspect the saved-results path and upload state. **Retry upload** never
-   replays the videos. An existing attempt prevents starting again; interruptions
-   require the explicit recovery/review workflow below.
-6. If browser authorization is unavailable, reveal **Manual pairing…** and use
-   the website's one-time code with explicit private-file-storage consent. It is
-   recovery-only, not the normal study-selection workflow. Revoke a lost or
-   retired workstation from the website before discarding its local profile.
-
-The pairing code, not the subject ID, identifies the study. Each device
-credential is restricted to one immutable published assignment. The launcher
-supports several saved connections without broadening any credential's access:
-select a different connection to switch studies. Publishing a revised assignment
-requires a new pairing; it does not retarget an existing one. Subjects are fetched
-from the paired assignment rather than guessed or entered into Python code.
-
-Existing CLI connections appear as **default**. New connections live at
-`~/.config/dbp-pgl/profiles/<name>` and never overwrite existing configurations.
-For a browser-selected study, use the selected profile for every CLI inspection,
-recovery, or upload command; do not fall back to the default connection:
-
-```sh
-PROFILE=~/.config/dbp-pgl/profiles/<selected-profile>
-dbp-pgl --config-dir "$PROFILE" status subject-001
-dbp-pgl --config-dir "$PROFILE" sync subject-001
-```
-
-The launcher uses the existing runner, not a second task implementation. PGL
-runs on the main thread of a separate Python process while the launcher remains
-responsive. It uses the entire integration block, labelled day 1/block 1, with
-the existing 12-second description and 50-degree width defaults. These are not
-approved participant session settings. The workstation profile fields select
-installed PGL lab settings; scientific scheduling remains a separate validation.
-The launcher disables Start when its Python cannot find PGL or is not a supported
-macOS/Python version. Preparation and result inspection remain available.
-At launch, a private temporary credential/configuration snapshot binds the child
-to the confirmed connection even if the original profile changes; it is removed
-when the child exits. Native console output is drained into a bounded memory
-buffer rather than an unbounded log on the results disk.
-
-Use the updated local website until the live server includes
-`GET /api/runner-device/study` and the other runner endpoints. Starting only the
-launcher does not make an older website compatible. Tk is an optional local
-desktop requirement; normal CLI commands do not import it.
-
-### Command line / notebook
-
-#### Browser-selected named profile
-
-1. Complete Coordinator launcher steps 1–3 above: choose **Choose study in
-   browser**, approve the published integration-test assignment, and select its
-   saved connection. Browser pairing creates the selected named profile; do not
-   run manual `dbp-pgl connect` for this workflow.
-2. Set that selected profile before every CLI or script entry point:
-
-```sh
-PROFILE=~/.config/dbp-pgl/profiles/<selected-profile>
-dbp-pgl --config-dir "$PROFILE" prepare s001
-dbp-pgl --config-dir "$PROFILE" run s001 --integration-test
-dbp-pgl --config-dir "$PROFILE" status s001
-dbp-pgl --config-dir "$PROFILE" sync s001
-```
-
-`run` automatically prepares media, fully checks decoding, reserves an exclusive
-attempt, launches real PGL, saves locally, and tries to synchronize afterward.
-The notebook offers the same sequence. The pilot script uses the selected profile
-only when `--config-dir` is passed before its command:
-
-```sh
-python examples/digital_brain_pilot.py --config-dir "$PROFILE" prepare s001
-python examples/digital_brain_pilot.py --config-dir "$PROFILE" run s001 --integration-test
-python examples/digital_brain_pilot.py --config-dir "$PROFILE" status s001
-python examples/digital_brain_pilot.py --config-dir "$PROFILE" sync s001
-```
-
-`dbp-pgl --config-dir "$PROFILE" prepare s001` can be done ahead of time.
-`run --no-sync` retains results locally for later synchronization.
-Use `--settings-name` and `--display-name` for installed PGL profiles;
-`--day`, `--block`, `--description-seconds`, and `--display-width` configure the
-integration pilot. Defaults match the notebook's 12-second description and
-50-degree width; lab calibration determines whether they are appropriate.
-
-#### Manual/default CLI recovery fallback
-
-Use this path only when browser authorization is unavailable. Manual
-`dbp-pgl connect` pairs with the website's one-time code into the default
-`~/.config/dbp-pgl` connection; it is a different workflow from a browser-created
-named profile. Keep every following command on that same default connection:
-
-```sh
-dbp-pgl connect
-dbp-pgl prepare s001
-dbp-pgl run s001 --integration-test
-dbp-pgl status s001
-dbp-pgl sync s001
-```
-
-**The live website must run the corresponding server integration.** Updating this
-package does not update the website. Use a current local instance until the live
-server has the runner APIs; deployment is not part of this package.
-
-## Python / Jupyter
+## Query, create, publish, download
 
 ```python
-from dbp_pgl_runner.runner import StudyRunner
-from dbp_pgl_runner.pgl_adapter import RunSettings
+from getpass import getpass
+from dbp_api import Client, ExperimentSpec, MetricFilter, media_from_row
 
-runner = StudyRunner()
-prepared = runner.prepare("s001")
-result = runner.run("s001", integration_test=True,
-                    settings=RunSettings(day=1, block=1))
-runner.status("s001")
-runner.sync("s001")
+with Client("https://your-dbp-host.example", timeout=30) as client:
+    client.login(input("Username: "), getpass("Password: "))
+    inventory = client.metrics()
+    # Choose metric IDs/operators from inventory["metrics"].
+    filters = [MetricFilter("duration_seconds", "gte", 3)]
+    result = client.query_media(filters=filters, limit=100)
+    videos = [media_from_row(row) for row in result["rows"]]
+
+    spec = ExperimentSpec(
+        name="Video experiment",
+        seed="pilot-1",
+        subject_count=100,
+        parents_per_subject=50,  # TOTAL: 10 parents/block × 5 blocks
+        block_count=5,
+        foils_per_block=4,       # 20 additional trials, 70 total per subject
+    )
+    experiment = client.create_experiment(
+        spec, filters=filters, version=result["version"],
+    )
+    publication = client.publish(experiment["id"])
+    subject_id = publication["subjects"][0]["subject_id"]
+    manifest_path = client.download_subject(
+        experiment["id"], subject_id, "./subject-download",
+    )
+    client.logout()
 ```
 
-For a notebook with an already-configured PGL instance, import `PglAdapter` and
-pass `adapter=PglAdapter(engine=your_pgl_instance)` to `runner.run`. The wrapper
-still owns the experiment, manifest, output directory, journal and cleanup;
-do not also call the original notebook's `e.run()` independently.
+Creation requires an explicit query `version`; re-use the same filters and custom
+metric definitions that produced that version. Query results retain the server's
+rows, aggregates, version, and pagination fields unchanged. Use `cursor` on
+`query_media()` to request subsequent pages. Dataset changes can return HTTP 409;
+query again and deliberately create a new experiment rather than silently retrying.
+For semantic/hybrid searches, carry the query's `search_version` into creation,
+along with the same `relevance_min`, `relevance_max`, and `cpu_pool` options.
 
-The returned `attempt_root` contains:
+`parents_per_subject` always means the total across all blocks and must divide
+evenly into `block_count`. Shared parents are included in that total; repeats and
+foils are extra trials. `shared_per_subject`, `repeats_per_subject`, and
+`foils_per_subject` default to zero. If supplied, `foils_per_block` derives the
+total foil count; a conflicting nonzero `foils_per_subject` is rejected.
+Current server limits: 100 subjects, 10,000 parents per subject, 50,000 total trials;
+shared, repeat, and foil counts cannot exceed parents per subject.
 
-```text
-<work-root>/<experiment>/<device>/<subject>/attempts/<attempt-id>/
-  attempt.json
-  reservation.json
-  decode.json
-  journal.json
-  events.jsonl
-  native/<experiment>/<subject>/dayN/<attempt-id>/...
-  artifact-manifest.json
-  sync-receipt.json
-```
+## Other operations
 
-Native PGL files include settings, state, responses, task parameters, and
-eye-tracker output when configured. Required native files must exist before
-completion is recorded. `sync-receipt.json` appears only after the server confirms
-the exact result inventory. Completed presentation and successful upload are
-separate states. Refresh **PGL runs** in the website for received progress;
-there are deliberately no network requests during presentation.
+- `client.session()`: inspect the account session and refresh its CSRF token.
+- `client.experiments(limit=100, offset=0)`: return the `experiments` envelope;
+  pass its non-null `next_offset` into the next request.
+- `client.experiment(experiment_id)`: detail, settings, subjects, recipe, publication.
+- `client.subject_manifest(experiment_id, subject_id)`: validated published manifest.
+- `client.query_media(experiment_id=experiment_id, subject_id="subject-001")`:
+  inspect one subject's assigned parents and metric distributions, using the saved
+  dataset version. Add `filters` to narrow inspection without changing assignments.
+  Omit `subject_id` for all assigned parents. Foils need segment measurements;
+  these distributions describe parents.
+- `client.preview_custom_metric("cats", version=result["version"])`: preview a
+  custom text metric (`corpus="both"`, `method="keyword_bm25_v1"` by default).
+  Pass its `definition` in `custom_metrics=[preview["definition"]]` to queries and creation.
 
-## Interrupted sessions
+Preview uses the existing `/api/metrics/custom/preview` endpoint. General operations
+use `/api/v1/metrics`, `/api/v1/media/query`, and `/api/v1/experiments`.
+Authentication uses the existing `/api/auth/login`, `session`, and `logout` routes.
 
-- Escape or an exception does not imply every trial completed. The journal
-  distinguishes loading, possible exposure, playback return, response collection,
-  persisted responses and completed trials.
-- Interrupt handling attempts native saving and display/device cleanup. A hard
-  process kill or power loss cannot guarantee native output; earlier durable
-  journal records survive. Cleanup failure is not scientific completion.
-- An interrupted attempt is never silently replayed. After a crash:
+## Media and downloads
 
-  ```sh
-  PROFILE=~/.config/dbp-pgl/profiles/<selected-profile>
-  dbp-pgl --config-dir "$PROFILE" status s001
-  dbp-pgl --config-dir "$PROFILE" recover s001 --terminate
-  dbp-pgl --config-dir "$PROFILE" sync s001
-  ```
+`Media` is abstract; `Video`, `Image`, and `Stimulus` are typed descriptors.
+Only video execution is supported. Passing `media_type=Image`, `Stimulus`, or
+their string names to creation raises `UnsupportedMediaError` before any request.
+Metric inventory exposes supported `media_types`; no presentation framework is imported.
+`media_from_row(row)` converts query rows (`clip_id`) or manifest trials (`media_id`)
+to typed media descriptors. Media identifiers allow normalized printable catalog IDs,
+including leading hyphens; they are never used as paths or filenames.
 
-  Only if an incomplete final journal fragment is reported, explicitly add
-  `--repair-tail`. Earlier corruption or a complete altered record remains an error.
-- Re-exposure requires a new reviewed study assignment. There is no automatic
-  continue/replay policy for participant memory experiments.
-- Failed synchronization never requires re-running PGL. Identical event and
-  artifact retries are safe; conflicting replacements are rejected.
-- The exclusive reservation does not silently expire while an offline experiment
-  may still run. If a workstation is lost, an owner must confirm it has stopped
-  before explicitly terminating its reservation.
+Download into a **new directory whose parent already exists**. Existing directories
+and symlinks are refused; any failed download removes only the newly created directory.
+Trial IDs are validated and media paths are derived from authenticated API routes,
+never from server-provided URLs or filenames. Foils are rendered by the server.
+Files stream in bounded chunks with configurable `max_media_bytes` (4 GiB per
+trial by default). Both `Content-Length` and `X-Content-SHA256` are required and
+verified. Subject manifests are checked using the backend's compact, sorted-key,
+UTF-8 JSON SHA-256, excluding only the top-level `manifest_sha256`.
 
-## Integrity and limits
+The returned `manifest.json` contains `{"manifest": <unchanged server manifest>,
+"files": {<trial_id>: <relative MP4 path>}}`. Its nested server hash remains valid:
+local paths are never inserted into the sealed server document. The enclosing local
+document is not covered by that server hash. No PGL or other experiment runner launches.
 
-The server owns order and conditions; the wrapper never shuffles or assigns
-subjects. Integration mapping: parent → `new-integration-parent`, repeat →
-`old-integration-repeat`, foil → `new-integration-foil`. These are **not an approved
-scientific schedule**. Day/block settings are not inferred scientific allocation.
+## Security and errors
 
-Videos download into a SHA-256 cache with byte-range resume. Each trial gets a
-unique basename, including repeated clips, because PGL consumes a basename
-manifest. Media hashes are checked again before execution and each distinct video
-is completely decoded with FFmpeg. Presentation uses only local files. Limits:
-32 MiB/video, 2 GiB distinct media/subject package. Larger studies need appropriate
-compressed renditions or reviewed blocks rather than bypassing these bounds.
+HTTPS is required except for exact localhost/loopback origins. URL credentials,
+paths, queries, fragments, and all redirects are refused. Passwords are sent only
+to login and never stored by the client; cookies and CSRF tokens stay in memory.
+Environment proxies are disabled. Timeout is a per-socket-operation timeout, not
+a whole-download deadline. JSON responses are size-bounded (16 MiB by default).
 
-Foils are rendered subclips of their assigned intervals, never full parents with
-different labels. The server requires `DBP_RUNNER_FFMPEG_PATH` and sibling `ffprobe`.
-Missing tools or failed interval validation stop preparation.
+`ApiError.status` exposes HTTP failures. Expected HTTP 400/409 errors outside auth
+include up to 512 characters of the server's `detail` (for example, insufficient
+eligible videos); treat this as server-supplied text. All other response bodies and
+all authentication error details are withheld. No request payload is added to errors.
+Invalid inputs raise `ValueError`. There are no automatic retries. A client is
+synchronous and not thread-safe. `logout()` revokes the server session and clears
+local credentials even if it fails; `close()` and context-manager exit only clear
+local credentials. Call `logout()` explicitly when server revocation is desired.
 
-Journal appends are flushed, fsynced, sequence-numbered and hash-chained. PGL hook
-times mark API boundaries, **not measured frame onset**. `response_saved` stores
-the description in the native task and durable journal; native files are verified
-separately at exit.
+## Legacy compatibility
 
-Artifacts exclude stimuli/credentials, reject symlinks/traversal, and are sealed
-before upload in chunks ≤1 MiB. Bounds: 1,024 files, 256 MiB/file, 1 GiB/attempt.
-Larger eye-tracker files need a reviewed extension. The server verifies file hashes,
-exact journal bytes, milestones, native inventory and final manifest. Checksums
-protect integrity, not against an authorized workstation fabricating an experiment.
+`dbp_pgl_runner` remains in this checkout as **deprecated compatibility code**.
+Existing results, journals, examples, and launcher files are not removed or migrated.
+The `dbp-api` wheel contains only `dbp_api`, so it does not overwrite an
+existing runner installation. It has no launcher entrypoint or PGL dependency.
+For an existing legacy environment, the old commands can still run from this
+checkout with `PYTHONPATH=src python -m dbp_pgl_runner`. New integrations use
+`dbp_api` to obtain media, then pass local files to their presentation framework.
 
-## Credentials and storage
-
-Use HTTPS for live origins, or HTTP only on literal loopback/localhost. The old
-public HTTP-only site is not a safe credential endpoint; an authenticated SSH
-tunnel to loopback is an alternative. Redirects and implicit environment proxies
-are refused. Pairing codes/tokens never appear in command-line arguments.
-
-`connect` uses hidden input and asks for private-file storage consent. Optional
-flags: `--server`, `--device-name`, `--allow-file-token`. Keychain is not implemented;
-secrets use owned mode-0600 files inside a mode-0700 directory. Native outputs are
-private. Never commit credentials, participant responses, journals, media, or databases.
-
-Global `--config-dir`, `--cache-root`, `--work-root` options precede the command.
-Defaults: `~/.config/dbp-pgl`, `~/.local/share/dbp-pgl/cache`,
-`~/.local/share/dbp-pgl/work`. Cache/work directories must be private, separate and
-non-nested. Re-pairing retains previous tokens; revoke old devices and remove
-unused tokens deliberately. Subjects: `s001`–`s100` / `subject-001`–`subject-100`.
-
-## Verification
+## Development
 
 ```sh
-PYTHONPATH=src python3 -m unittest discover -s tests -v
+python -m pip install -e .
+PYTHONPATH=src python -m unittest discover -s tests -v
+python -m compileall -q src
 ```
-
-Tests cover execution, interrupts, duplicate synchronization, altered artifacts,
-unsafe paths, credentials, notebook syntax and native adapter cleanup with
-headless test doubles. In the sibling website checkout, the real HTTP test covers
-browser authorization → authenticated assignment approval → one-time
-exchange/profile publication → subject selection → preparation → reservation →
-journal → clearly synthetic native-shaped test outputs → upload → idempotent
-finalization → offline inspection:
-
-```sh
-DBP_PGL_RUNNER_SOURCE=/absolute/path/to/dbp-pgl-runner/src \\
-  PYTHONPATH=.:tests .venv/bin/python -m unittest tests.test_study_runner_integration.WrapperIntegrationTests -v
-```
-
-This verifies software integration, not actual display/input/eye-tracker behavior.
-For an opt-in local test of the actual Tk controls with a mocked presentation
-process (no task display or participant data):
-
-```sh
-DBP_TEST_GUI=1 PYTHONPATH=src python3.12 -m unittest tests.test_launcher -v
-```
-
-Before participants, Justin/the study team must confirm conditions, foil/repeat
-timing, interruptions and subject/day/block mapping, then run a non-participant
-lab test and inspect native outputs.

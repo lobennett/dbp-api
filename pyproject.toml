@@ -3,20 +3,22 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "dbp-pgl-runner"
-version = "0.3.0"
-description = "Digital Brain study preparation, PGL pilot execution, durable results and synchronization"
+name = "dbp-api"
+version = "0.1.0"
+description = "Platform-independent Digital Brain Python API client"
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
 
-[project.optional-dependencies]
-experiment = ["pgl @ git+https://github.com/lobennett/pgl.git@128874a1940da7c75e4db554fdff28602d4f3985 ; sys_platform == 'darwin' and python_version >= '3.12'"]
-
-[project.scripts]
-dbp-pgl = "dbp_pgl_runner.cli:main"
+[project.urls]
+Repository = "https://github.com/lobennett/dbp-api"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["dbp_api*"]
+
+[tool.setuptools.package-data]
+dbp_api = ["py.typed"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
