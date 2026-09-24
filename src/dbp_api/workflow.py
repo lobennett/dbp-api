@@ -41,6 +41,19 @@ class _SubjectDocument(TypedDict):
     blocks: list[_BlockDocument]
 
 
+class SubjectSummary(TypedDict):
+    subject: str
+    trials: int
+    unique_videos: int
+    full_videos: int
+    initial_segments: int
+    foils: int
+    repeats: int
+    cut: int
+    no_cut: int
+    cuts_unknown: int
+
+
 def subject_ids(publication: JSONObject) -> tuple[str, ...]:
     subjects = publication.get("subjects")
     if not isinstance(subjects, list) or not subjects:
@@ -129,6 +142,28 @@ class Assignments:
     client: Client
     experiment_id: str
     subject_ids: tuple[str, ...]
+
+    def summary(self) -> list[SubjectSummary]:
+        """Read per-subject trial counts; missing cut measurements remain unknown."""
+        publication = self.client.experiment(self.experiment_id).get("publication")
+        if not isinstance(publication, dict):
+            raise ValueError("This experiment has no published assignments")
+        rows = []
+        for subject in cast(list[dict], publication["subjects"]):
+            trials = [trial for block in subject["blocks"] for trial in block["trials"]]
+            counts = [(trial.get("cut_measurement") or {}).get("hard_cut_count") for trial in trials]
+            known = [count for count in counts if type(count) is int and count >= 0]
+            rows.append(SubjectSummary(
+                subject=subject["subject_id"], trials=len(trials),
+                unique_videos=len({trial["media_id"] for trial in trials}),
+                full_videos=sum(trial["role"] == "parent" and trial["segment"] is None for trial in trials),
+                initial_segments=sum(trial["role"] == "parent" and trial["segment"] is not None for trial in trials),
+                foils=sum(trial["role"] == "foil" for trial in trials),
+                repeats=sum(trial["role"] == "repeat" for trial in trials),
+                cut=sum(count > 0 for count in known), no_cut=known.count(0),
+                cuts_unknown=len(trials) - len(known),
+            ))
+        return rows
 
     def subject(self, subject_id: str, *, workspace: str | Path = ".dbp") -> Session:
         if subject_id not in self.subject_ids:
