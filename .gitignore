@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .venv/
+.dbp/
 .ipynb_checkpoints/
 dbp-demo-download/
 *.egg-info/

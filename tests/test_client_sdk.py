@@ -58,7 +58,7 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(Video("video-1").media_type, "video")
         for media in (Image, Stimulus):
             with self.subTest(media=media), self.assertRaises(UnsupportedMediaError):
-                Client("https://example.org").create_experiment(
+                Client("https://example.org")._create_experiment(
                     ExperimentSpec("test", "seed", 1, 1), media_type=media)
 
     def test_total_parents_and_extra_foils(self):
@@ -139,7 +139,7 @@ class ClientTests(unittest.TestCase):
                 "version": "v1", "cursor": "next", "limit": 5, "content_query": "cat",
                 "corpus": "both", "mode": "keyword", "custom_metrics": [{"id": "custom"}],
             })
-            created = client.create_experiment(ExperimentSpec("test", "seed", 1, 50,
+            created = client._create_experiment(ExperimentSpec("test", "seed", 1, 50,
                                                 block_count=5, foils_per_block=4), version="v1")
             self.assertEqual(created["path"], "/api/v1/experiments")
             self.assertEqual(created["body"]["settings"]["foils_per_subject"], 20)
@@ -169,7 +169,7 @@ class ClientTests(unittest.TestCase):
             client.login("user", "password")
             options = dict(content_query="cats", mode="hybrid", version="v1", search_version="search-v1",
                            relevance_min=10, relevance_max=90, cpu_pool="scored")
-            for result in (client.query_media(**options), client.create_experiment(
+            for result in (client.query_media(**options), client._create_experiment(
                     ExperimentSpec("test", "seed", 1, 1), **options)):
                 for key, value in options.items():
                     self.assertEqual(result["body"][key], value)
@@ -273,7 +273,7 @@ class ClientTests(unittest.TestCase):
     def test_create_requires_pinned_version(self):
         with server(lambda *args: response({})) as (origin, requests):
             with self.assertRaises(ValueError):
-                Client(origin).create_experiment(ExperimentSpec("test", "seed", 1, 1))
+                Client(origin)._create_experiment(ExperimentSpec("test", "seed", 1, 1))
             self.assertEqual(requests, [])
 
 

@@ -18,6 +18,7 @@ from .models import (
     ExperimentSpec, JSONObject, JSONValue, Media, MediaType, MetricFilter,
     UnsupportedMediaError, Video, identifier, media_from_row,
 )
+from .workflow import Experiment, Assignments, Selection, subject_ids
 
 
 class ApiError(RuntimeError):
@@ -240,7 +241,29 @@ class Client:
         return self._json("POST", "/api/metrics/custom/preview",
                           {"query": query, "version": version, "corpus": corpus, "method": method})
 
-    def create_experiment(self, spec: ExperimentSpec, *, media_type: MediaType | type[Media] = "video",
+    def create_experiment(self, *, name: str, seed: str,
+                          filters: Sequence[MetricFilter] = (), content_query: str = "", corpus: str = "both",
+                          media_type: MediaType | type[Media] = Video) -> Experiment:
+        """Pin a selection recipe. assign() subsequently saves subject assignments."""
+        if media_type not in ("video", Video):
+            raise UnsupportedMediaError("Only videos are supported by this server; images are a future modality")
+        ExperimentSpec(name, seed, 1, 1)
+        result = self.query_media(filters=filters, content_query=content_query, corpus=corpus, limit=1)
+        version, search_version = result.get("version"), result.get("search_version")
+        if not isinstance(version, str) or not version or (search_version is not None and not isinstance(search_version, str)):
+            raise ApiError("Query returned invalid dataset or search version")
+        selection = Selection(tuple(filters), content_query, corpus, version, search_version)
+        return Experiment(self, name, seed, selection)
+
+    def assignments(self, experiment_id: str) -> Assignments:
+        """Open existing published assignments without sampling or changing them."""
+        detail = self.experiment(experiment_id)
+        publication = detail.get("publication")
+        if not isinstance(publication, dict) or "subjects" not in publication:
+            raise ValueError("Publish this experiment before opening its assignments")
+        return Assignments(self, experiment_id, subject_ids(publication))
+
+    def _create_experiment(self, spec: ExperimentSpec, *, media_type: MediaType | type[Media] = "video",
                           filters: Sequence[MetricFilter] = (), content_query: str = "", corpus: str = "both",
                           mode: str = "keyword", version: str | None = None,
                           custom_metrics: Sequence[JSONObject] = (), search_version: str | None = None,
