@@ -9,6 +9,22 @@ from tests.test_client_sdk import manifest
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_assignment_summary_counts_actual_trials_and_unknown_measurements(self):
+        client = Client("http://localhost:8773")
+        trials = [dict(media_id="a", role="parent", segment=None, cut_measurement=dict(hard_cut_count=2)),
+                  dict(media_id="b", role="parent", segment=dict(start_seconds=0, end_seconds=5),
+                       cut_measurement=dict(hard_cut_count=0)),
+                  dict(media_id="b", role="foil", segment=dict(start_seconds=5, end_seconds=10)),
+                  dict(media_id="a", role="repeat", segment=None, cut_measurement=dict(hard_cut_count=True))]
+        client.experiment = Mock(return_value=dict(publication=dict(subjects=[
+            dict(subject_id="subject-001", blocks=[dict(trials=trials)])])))
+        assignments = Assignments(client, "experiment-1", ("subject-001",))
+        summary = assignments.summary()
+        self.assertEqual(summary, [dict(subject="subject-001", trials=4, unique_videos=2,
+                                       full_videos=1, initial_segments=1, foils=1, repeats=1,
+                                       cut=1, no_cut=1, cuts_unknown=2)])
+        client.experiment.assert_called_once_with("experiment-1")
+
     def client(self):
         client = Client("http://localhost:8773")
         client.query_media = Mock(return_value=dict(version="dataset", search_version=None))

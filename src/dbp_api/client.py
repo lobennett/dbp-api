@@ -335,6 +335,7 @@ class Client:
 
         manifest.json wraps the untouched server manifest and a trial-ID/path map.
         No server hash is recalculated or applied to the augmented local document.
+        Missing parent directories are created; an existing destination is never replaced.
         """
         path = self._subject_path(experiment_id, subject_id)
         target = Path(destination)
@@ -342,7 +343,7 @@ class Client:
             raise FileExistsError("Download destination already exists")
         manifest = self.subject_manifest(experiment_id, subject_id)
         trial_ids = _manifest_trials(manifest, experiment_id, subject_id)
-        target.mkdir(mode=0o700)
+        target.mkdir(mode=0o700, parents=True)
         try:
             files: JSONObject = {}
             for index, trial_id in enumerate(trial_ids, 1):
@@ -390,8 +391,10 @@ def _manifest_trials(manifest: JSONObject, experiment_id: str, subject_id: str) 
             if media.media_type != "video" or trial.get("media_type") != "video":
                 raise UnsupportedMediaError("Only video trial downloads are supported")
             segment = trial["segment"]
-            if (trial["role"] == "foil") != (segment is not None):
-                raise ApiError("Foils require a segment; parent and repeat trials must have no segment")
+            if trial["role"] == "foil" and segment is None:
+                raise ApiError("Foils require a segment")
+            if trial["role"] == "repeat" and segment is not None:
+                raise ApiError("Repeat trials must have no segment")
             if segment is not None:
                 if not isinstance(segment, dict) or set(segment) != {"start_seconds", "end_seconds"}:
                     raise ApiError("Invalid segment")

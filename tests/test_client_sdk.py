@@ -8,7 +8,7 @@ from unittest.mock import patch
 from urllib.error import URLError
 
 from dbp_api import (
-    ApiError, Client, ExperimentSpec, Image, Media, MetricFilter, Stimulus,
+    ApiError, Assignments, Client, ExperimentSpec, Image, Media, MetricFilter, Stimulus,
     UnsupportedMediaError, Video, media_from_row,
 )
 from tests.http_fixture import server
@@ -278,6 +278,48 @@ class ClientTests(unittest.TestCase):
 
 
 class DownloadTests(unittest.TestCase):
+    def test_complementary_parent_and_foil_segments_download_separately(self):
+        original = manifest()
+        original["blocks"][0]["trials"][0]["segment"] = dict(start_seconds=0, end_seconds=1)
+        original = seal(original)
+
+        def respond(method, path, headers, body):
+            if path.endswith("/manifest"):
+                return response(original)
+            return media_response(b"first-half" if "/trial-1/" in path else b"second-half")
+
+        with tempfile.TemporaryDirectory() as temporary, server(respond) as (origin, requests):
+            assignments = Assignments(Client(origin), "experiment-1", ("subject-001",))
+            session = assignments.subject("subject-001", workspace=Path(temporary) / "journal")
+            destination = Path(temporary) / "videos" / "experiment-1" / "subject-001"
+            trials = session.download(destination)
+            self.assertEqual(len(trials), 2)
+            self.assertEqual(trials[0].role, "parent")
+            self.assertEqual(trials[0].segment.start_seconds, 0)
+            self.assertEqual(trials[0].segment.end_seconds, trials[1].segment.start_seconds)
+            self.assertEqual(trials[0].local_path.read_bytes(), b"first-half")
+            self.assertEqual(trials[1].local_path.read_bytes(), b"second-half")
+            self.assertNotEqual(trials[0].local_path, trials[1].local_path)
+            self.assertTrue(all(method == "GET" for method, *_ in requests))
+            with self.assertRaises(FileExistsError):
+                session.download(destination)
+            self.assertEqual(trials[0].local_path.read_bytes(), b"first-half")
+
+    def test_nested_download_failure_keeps_parent_contents(self):
+        def respond(method, path, headers, body):
+            return response(manifest()) if path.endswith("/manifest") else (500, {}, b"failed")
+
+        with tempfile.TemporaryDirectory() as temporary, server(respond) as (origin, requests):
+            parent = Path(temporary) / "downloads"
+            parent.mkdir()
+            retained = parent / "keep.txt"
+            retained.write_text("keep")
+            destination = parent / "experiment-1" / "subject-001"
+            with self.assertRaises(ApiError):
+                Client(origin).download_subject("experiment-1", "subject-001", destination)
+            self.assertFalse(destination.exists())
+            self.assertEqual(retained.read_text(), "keep")
+
     def test_symlink_destination_is_never_followed(self):
         with tempfile.TemporaryDirectory() as temporary:
             destination = Path(temporary) / "link"
@@ -338,7 +380,9 @@ class DownloadTests(unittest.TestCase):
             value_manifest = manifest()
             value_manifest["blocks"][0]["trials"][0][field] = value
             variants.append(seal(value_manifest))
-        for role, segment in (("foil", None), ("parent", {"start_seconds": 0, "end_seconds": 1}),
+        for role, segment in (("foil", None), ("parent", {"start_seconds": -1, "end_seconds": 1}),
+                              ("parent", {"start_seconds": True, "end_seconds": 1}),
+                              ("parent", {"start_seconds": 1, "end_seconds": 1}),
                               ("repeat", {"start_seconds": 0, "end_seconds": 1})):
             invalid = manifest()
             invalid["blocks"][0]["trials"][0].update(role=role, segment=segment)

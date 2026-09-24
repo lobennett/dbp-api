@@ -120,6 +120,7 @@ class ExperimentSpec:
     foils_per_subject: int = 0
     block_count: int = 1
     foils_per_block: int | None = None
+    balance_cuts: bool = False
 
     def __post_init__(self) -> None:
         for name, maximum in (("name", 120), ("seed", 128)):
@@ -145,6 +146,11 @@ class ExperimentSpec:
                 raise ValueError(f"{name} cannot exceed total parents_per_subject")
         if self.subject_count * self.trials_per_subject > 50000:
             raise ValueError("Experiment exceeds 50,000 total trials")
+        if type(self.balance_cuts) is not bool:
+            raise ValueError("balance_cuts must be boolean")
+        if self.balance_cuts and (self.parents_per_subject % 2 or self.foils_per_subject % 2
+                                 or self.block_count != 1 or self.shared_per_subject or self.repeats_per_subject):
+            raise ValueError("Cut balance requires even parent/foil counts, one block, no sharing or repeats")
 
     @property
     def trials_per_subject(self) -> int:
@@ -154,4 +160,6 @@ class ExperimentSpec:
         result = asdict(self)
         if self.foils_per_block is None:
             result.pop("foils_per_block")
+        if not self.balance_cuts:
+            result.pop("balance_cuts")
         return result
