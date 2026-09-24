@@ -108,10 +108,10 @@ class Experiment:
 
     def assign(self, *, subjects: int, items_per_subject: int, blocks: int = 1,
                foils_per_block: int = 0, shared_per_subject: int = 0,
-               repeats_per_subject: int = 0) -> Assignments:
+               repeats_per_subject: int = 0, balance_cuts: bool = False) -> Assignments:
         spec = ExperimentSpec(self.name, self.seed, subjects, items_per_subject,
                               shared_per_subject=shared_per_subject, repeats_per_subject=repeats_per_subject,
-                              block_count=blocks, foils_per_block=foils_per_block)
+                              block_count=blocks, foils_per_block=foils_per_block, balance_cuts=balance_cuts)
         record = self.client._create_experiment(spec, **self.selection.to_dict())
         experiment_id = str(record["id"])
         try:

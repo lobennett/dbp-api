@@ -12,7 +12,12 @@ uv run --extra demo jupyter lab examples/dbp_api_demo.ipynb
 ```
 
 The [single demo](examples/dbp_api_demo.ipynb) lists all metrics and measured/unknown
-video counts, filters videos, and optionally saves assignments and downloads media.
+video counts, filters videos, and creates or reopens the complementary-half rehearsal:
+5 subjects, each with 16 full videos, 4 first halves, and 4 later second-half foils.
+It verifies 12 cut/12 no-cut presentations per subject and optionally downloads media.
+Creation requires the updated local server and its measured complementary-half
+candidates; those data are not shipped with this package. Existing experiments can
+be reopened by ID without resampling. Creation and downloads are opt-in cells.
 It includes commented examples for presentation reporting and future image support.
 Use a website with the matching `/api/v1` experiment **and progress** endpoints.
 HTTPS is required except on localhost. Clear notebook outputs before sharing.
