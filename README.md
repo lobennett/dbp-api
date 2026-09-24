@@ -3,6 +3,8 @@
 Select database items, assign them to subjects, download them, and report
 presentation progress. Python 3.11+; no playback framework or runtime dependencies.
 
+References: [classes and methods](docs/api-classes.md) · [server-to-local flow](docs/server-to-local-flow.md).
+
 ## Notebook
 
 ```sh
