@@ -2,12 +2,35 @@ import ast
 import json
 from pathlib import Path
 import unittest
+from unittest.mock import Mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class DemoTests(unittest.TestCase):
+    def test_basic_creation_and_reopening(self):
+        notebook = json.loads((ROOT / "examples/dbp_api_demo.ipynb").read_text())
+        source = next("".join(cell["source"]) for cell in notebook["cells"]
+                      if cell["id"] == "create")
+        client = Mock()
+        client.create_experiment.return_value.assign.return_value.experiment_id = "saved-demo"
+        context = dict(client=client, experiment_id="new", filters=[],
+                       content_query="", print=Mock())
+        exec(source, context)
+        client.create_experiment.return_value.assign.assert_called_once_with(
+            subjects=2, items_per_subject=5)
+        self.assertEqual(context["experiment_id"], "saved-demo")
+        exec(source, context)
+        client.assignments.assert_called_once_with("saved-demo")
+        client.create_experiment.assert_called_once()
+
+    def test_optional_examples_do_not_run(self):
+        notebook = json.loads((ROOT / "examples/dbp_api_demo.ipynb").read_text())
+        for cell_id in ("tracking", "optional-foils"):
+            cell = next(cell for cell in notebook["cells"] if cell["id"] == cell_id)
+            self.assertEqual(cell["cell_type"], "markdown")
+
     def test_single_clean_notebook(self):
         notebooks = list((ROOT / "examples").glob("*.ipynb"))
         self.assertEqual([path.name for path in notebooks], ["dbp_api_demo.ipynb"])

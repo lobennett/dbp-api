@@ -14,13 +14,15 @@ uv run --extra demo jupyter lab examples/dbp_api_demo.ipynb
 ```
 
 The [notebook](examples/dbp_api_demo.ipynb) walks through sign-in, metric coverage,
-creation, verification, downloads, and a first-half/second-half preview.
+creation or loading, assignments, downloads, and presentation tracking.
+Each major class has a short reference beside its example.
 Edit the URL and username; only the password is prompted. Enter `"new"` to create,
 or a saved experiment ID to reopen. Downloads happen only when you run that step.
 
-The demo needs the updated `/api/v1` server with `DBP_CUT_BALANCE_CANDIDATES` and
-`DBP_CUT_BALANCE_SHA256` configured for measured complementary halves. Media and
-candidate data are not included. Use HTTPS except on localhost.
+The basic demo creates two subjects with five full videos each on a DBP `/api/v1`
+server. The optional foil example also needs `DBP_CUT_BALANCE_CANDIDATES` and
+`DBP_CUT_BALANCE_SHA256` configured for measured complementary halves.
+Media and candidate data are not included. Use HTTPS except on localhost.
 Clear outputs before sharing; previews embed video data.
 
 ## Interface
